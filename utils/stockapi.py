@@ -1,6 +1,9 @@
 import requests
 import json
 
+#-------------------------------------------------
+#   SNOWBALL
+#-------------------------------------------------
 SNOWBALL_STOCKURL = 'https://stock.xueqiu.com/v5/stock/realtime/quotec.json?symbol={}'
 SNOWBALL_headers = {
     'Accept': '*/*',
@@ -45,3 +48,7 @@ def iex_stock(symbol):
     else:
         # Handle the error
         print(f"Error: {response.status_code}")
+
+#-------------------------------------------------
+#   EASTMONEY
+#-------------------------------------------------
