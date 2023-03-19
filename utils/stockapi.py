@@ -25,7 +25,7 @@ def stock_info(symbol):
 #-------------------------------------------------
 #   IEX 
 #-------------------------------------------------
-api_key ="pk_63e59b9f85d84ae68e140a2cdae738af"  # "sk_d3b9987f52354e9e9d9b7a0a948ca548"
+api_key ="pk_63e59b9f85d84ae68e140a2cdae738af"  # 
 
 
 # Define the API endpoint and parameters
@@ -43,12 +43,60 @@ def iex_stock(symbol):
         # Extract the JSON data from the response
         json_data = response.json()
 
-        # Print the company name and latest price
-        print(json_data)
+        return json_data
     else:
         # Handle the error
         print(f"Error: {response.status_code}")
+        return {'err': response.status_code}
 
+# types: quote or stats
+def iex_stocks(symbols, types):
+    endpoint="https://sandbox.iex.cloud/stable/stock/market/batch?symbols={}&types={}&token={}".format(symbols, types, api_key)
+        # Make the API request
+    response = requests.get(endpoint)
+
+    # Check if the request was successful
+    if response.status_code == 200:
+        # Extract the JSON data from the response
+        json_data = response.json()
+
+        return json_data
+    else:
+        # Handle the error
+        print(f"Error: {response.status_code}")
+        return {'err': response.status_code}
+    
+print(iex_stocks('AAPL,MMM', 'stats'))
 #-------------------------------------------------
 #   EASTMONEY
+#-------------------------------------------------
+def eastmoney_stock():
+    url = 'http://18.push2.eastmoney.com/api/qt/clist/get'
+    param = {"pn": "1","pz": "3000", "po": "1", "np": "1","ut": "bd1d9ddb04089700cf9c27f6f7426281",
+"fltt": "2",
+"invt": "2",
+"fid": "f3",
+"fs": "m:1+t:2,m:1+t:23",
+"fields": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f26,f38,f39,f22,f11,f62,f128,f136,f115,f152,f297",
+"invt": "2",
+"invt": "2",
+"invt": "2"}
+    
+    response=requests.get(url, params=param)
+
+        # Check if the request was successful
+    if response.status_code == 200:
+        # Extract the JSON data from the response
+        json_data = response.json()
+
+        return json_data
+    else:
+        # Handle the error
+        print(f"Error: {response.status_code}")
+        return {'err': response.status_code}
+
+
+# print(eastmoney_stock())
+#-------------------------------------------------
+#   CSV数据保存
 #-------------------------------------------------
