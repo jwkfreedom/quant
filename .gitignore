@@ -129,3 +129,4 @@ dmypy.json
 .pyre/
 
 study/data/secret.py
+data/*
