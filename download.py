@@ -6,6 +6,7 @@
 import akshare as ak
 import pandas as pd
 import time
+import datetime
 
 
 # ----- 下载所有股票基本面概要数据数据（业绩快报） ------
@@ -16,7 +17,7 @@ import time
 #       type = 'zcfz'(资产负债)， lrb(利润表), xjll(现金流量)
 #       year = YYYY (比如2010)
 #       season = ["{year}0331", "{year}0630", "{year}0930", "{year}1231"] 数组中的一个或几个
-def jibenmian(type, yStart, yEnd, season=["{year}0331", "{year}0630", "{year}0930", "{year}1231"]):
+def all_jibenmian(type, yStart, yEnd, season=["{year}0331", "{year}0630", "{year}0930", "{year}1231"]):
     funcMap = {'zcfz': ak.stock_zcfz_em, 'lrb': ak.stock_lrb_em, 'xjll' : ak.stock_xjll_em}
     if not type in funcMap :
         print("error type:" + type)
@@ -45,7 +46,7 @@ def jibenmian(type, yStart, yEnd, season=["{year}0331", "{year}0630", "{year}093
     ak.stock_cash_flow_sheet_by_report_em(symbol) # 现金流量表-按报告期
     ak.stock_cash_flow_sheet_by_yearly_em(symbol) # 现金流量表-年度
     """
-def jibenmian_stock(symbol):
+def stock_jibenmian(symbol):
     funcMap = {'zcfz_report': ak.stock_balance_sheet_by_report_em, 
                'zcfz_year': ak.stock_balance_sheet_by_yearly_em}
     for type, func in funcMap.items():
@@ -54,10 +55,28 @@ def jibenmian_stock(symbol):
         df.to_csv(filename)
 
 # ------ 下载股票日线数据 ------
-#def stock_daily():
-#    stockIds = all_a_stocks()
+# A股股票日线数据，整合了前复权和未复权数据到一张表里
+def stock_price(symbol):
+    cur_date = datetime.datetime.now().strftime("%Y%m%d")   # YYYYMMDD
+    df_stock_2022 = ak.stock_zh_a_daily(symbol=symbol, start_date="20100101", end_date="20221231", adjust="")
+    df_stock_cur = ak.stock_zh_a_daily(symbol=symbol, start_date="20230101", end_date=cur_date, adjust="")
+    df_stock_2022_qfq = ak.stock_zh_a_daily(symbol=symbol, start_date="20100101", end_date="20221231", adjust="qfq")
+    df_stock_cur_qfq = ak.stock_zh_a_daily(symbol=symbol, start_date="20230101", end_date=cur_date, adjust="qfq")
 
 
+    copy_qfq_data(df_stock_2022_qfq, df_stock_2022)
+    df_stock_2022.to_csv(f"data/a/price_{symbol}_2022.csv")
+    copy_qfq_data(df_stock_cur_qfq, df_stock_cur)
+    df_stock_cur.to_csv(f"data/a/price_{symbol}_cur.csv")
+
+
+# 把前复权的数据拷贝到没有前复权的数据中
+# dfqfq: 前复权的股票价格
+def copy_qfq_data(dfqfq, df):
+    columns=['open','high','low','close']
+
+    for column in columns:
+        df[f'{column}_qfq'] = dfqfq[column]
 
 # 获取所有 A股股票Id
 def all_a_stocks():
@@ -76,6 +95,6 @@ def StockFormat(stockId) :
     else:
         print("not support stockId:" + stockId)
     return stockId
+ 
 
-# jibenmian('xjll', 2022, 2023)
-jibenmian_stock('SH600557')
+stock_price("sh600036")
