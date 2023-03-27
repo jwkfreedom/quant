@@ -1,33 +1,28 @@
 import pandas as pd
+import mplfinance as mpf
 
 def ana_a_stock(symbol):
-    df_price = pd.read_csv(f"data/a/price_{symbol}.csv")
-    df_price_qfq = pd.read_csv(f"data/a/price_{symbol}_qfq.csv")
-    df_qfq_factor = pd.read_csv(f"data/a/qfq_{symbol}.csv")
+    df_price_2022 = pd.read_csv(f"data/a/price_{symbol}_2022.csv")
+    df_price_cur = pd.read_csv(f"data/a/price_{symbol}_cur.csv")
+    df_price = pd.concat([df_price_2022, df_price_cur])
+    df_price.index = pd.DatetimeIndex(df_price['date'])
+    df_price = df_price.loc["2023-02-06": "2023-03-10"]
+    mpf.plot(df_price, type='candle')
+
+    print(df_price)
+    
 
 
-    date = '2010-03-16'
-    price = (df_price[df_price["date"]==date]['open'])
-    price_qfq = (df_price_qfq[df_price["date"]==date]['open'])
 
-    v = price / price_qfq
-
-    print(f'v={v}')
-    print(df_qfq_factor)
-
-
+# 由日期获得前复权的factor
+# df 是前复权因子的dataframe
 def get_qfq_factor(df, date_find):
+    df['date2'] = pd.to_datetime(df['date'])
+    df = df.sort_values(by='date2')
     # loop through the date column and find values before a certain date
     for i, date in enumerate(df['date2']):
         if date >= pd.to_datetime(date_find):
             break
     return df.iloc[i]['qfq_factor']
 
-
-symbol='sh600036'
-df_qfq_factor = pd.read_csv(f"data/a/qfq_{symbol}.csv")
-df_qfq_factor['date2'] = pd.to_datetime(df_qfq_factor['date'])
-
-# sort the dataframe by date
-df = df_qfq_factor.sort_values(by='date2')
-print(get_qfq_factor(df, '2012-12-26'))
+ana_a_stock('sh600036')
