@@ -134,5 +134,5 @@ def StockFormat(stockId) :
 # jibenmian('xjll', 2022, 2023)
 # jibenmian_details()
 # stock_price("sh600036")
-stock_jibenmian("SH600111", 0)
+stock_price("sz002508", True)
 
