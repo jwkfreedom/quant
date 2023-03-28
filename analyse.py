@@ -1,15 +1,19 @@
 import pandas as pd
-import mplfinance as mpf
 
-def ana_a_stock(symbol):
-    df_price_2022 = pd.read_csv(f"data/a/price_{symbol}_2022.csv")
-    df_price_cur = pd.read_csv(f"data/a/price_{symbol}_cur.csv")
+import numpy as np
+import talib
+
+
+def get_stock_data(symbol):
+    file_src=f"data/a/price_{symbol}_"
+
+    df_price_2022 = pd.read_csv(file_src + "2022.csv")
+    df_price_cur = pd.read_csv(file_src + "cur.csv")
     df_price = pd.concat([df_price_2022, df_price_cur])
     df_price.index = pd.DatetimeIndex(df_price['date'])
-    df_price = df_price.loc["2023-02-06": "2023-03-10"]
-    mpf.plot(df_price, type='candle')
-
-    print(df_price)
+    # df_price = df_price.loc["2023-02-06": "2023-03-10"]
+    # print(df_price)
+    return df_price
     
 
 
@@ -25,4 +29,29 @@ def get_qfq_factor(df, date_find):
             break
     return df.iloc[i]['qfq_factor']
 
-ana_a_stock('sh600036')
+def ana_stock(data):
+    # 计算指标
+    data['MA5'] = talib.MA(data['close'], timeperiod=5)
+    data['MA10'] = talib.MA(data['close'], timeperiod=10)
+    data['RSI'] = talib.RSI(data['close'], timeperiod=12)
+
+    # 判断买卖信号
+    data['signal'] = np.where((data['MA5'] > data['MA10']) & (data['RSI'] < 30), 1, 0)
+    data['position'] = data['signal'].diff()
+
+    # 回测
+    data['pnl'] = data['position'] * data['close'].pct_change()
+    data['cum_pnl'] = data['pnl'].cumsum()
+    data['cum_return'] = np.exp(np.log1p(data['cum_pnl']).cumsum()) - 1
+
+    # 输出结果
+    # print(data[['date', 'open', 'high', 'low', 'close', 'signal', 'pnl', 'cum_return']])
+    # print(data[data['signal']>0])
+
+    print(data)
+    return data
+
+
+df = get_stock_data("sh600036")
+df = ana_stock(df)
+df.to_csv('data/temp.csv')
