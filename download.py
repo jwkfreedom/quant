@@ -167,4 +167,5 @@ def PlatformSymbol(stockId, platform="") :
 # stock_price("600036", True)
 # stock_jibenmian("600111", 0)
 
+
 jibenmian_all()
