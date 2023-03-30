@@ -1,7 +1,10 @@
 """
 下载数据
-    jibenmian: 下载基本面数据（业绩快报），支持 资产负债表，利润表，现金流量表
-    stock_daily: 下载股票日线
+    jibenmian_all_fast: 下载基本面数据（业绩快报），支持 资产负债表，利润表，现金流量表
+    jibenmian_all: 下载所有A股股票的基本面详细数据，包括 资产负债表， 利润表， 现金流量表
+    stock_jibenmian: 单一股票的基本面详细数据
+
+    stock_price_all: 下载所有股票日线数据
 """
 import akshare as ak
 import pandas as pd
@@ -18,7 +21,7 @@ import datetime
 #       type = 'zcfz'(资产负债)， lrb(利润表), xjll(现金流量)
 #       year = YYYY (比如2010)
 #       season = ["{year}0331", "{year}0630", "{year}0930", "{year}1231"] 数组中的一个或几个
-def all_jibenmian(type, yStart, yEnd, season=["{year}0331", "{year}0630", "{year}0930", "{year}1231"]):
+def jibenmian_all_fast(type, yStart, yEnd, season=["{year}0331", "{year}0630", "{year}0930", "{year}1231"]):
     funcMap = {'zcfz': ak.stock_zcfz_em, 'lrb': ak.stock_lrb_em, 'xjll' : ak.stock_xjll_em}
     dest = "data/a/jibenmian/{}_{}.csv"   # 输出文件位置
 
@@ -81,7 +84,7 @@ def stock_jibenmian(symbol, delay, jbm_type=None):
 
         if jbm_type != None and jbm_type != type:
             continue
-        subdir = symbol[:3]
+        subdir = type.split('_')[0]
         filename = dest.format(subdir, type, symbol)
         if not os.path.exists(filename):
             try:
