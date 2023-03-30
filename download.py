@@ -18,6 +18,7 @@ import datetime
 # 资产负债表    'zcfz': ak.stock_zcfz_em
 # 利润表        'lrb': ak.stock_lrb_em
 # 现金流量表    'xjll' : ak.stock_xjll_em
+# 业绩报表(正式) '' : ak.stock_yjbb_em
 #   jibenmian = 基本面
 #       type = 'zcfz'(资产负债)， lrb(利润表), xjll(现金流量)
 #       year = YYYY (比如2010)
@@ -105,8 +106,8 @@ def stock_jibenmian(symbol, delay, jbm_type=None):
 # A股股票日线数据，整合了前复权和未复权数据到一张表里
 # down_2022: 是否下载2022年之前的数据
 def stock_price(symbol, down_2022=False):
-    file_2022 = f"data/a/price/price_{symbol}_2022.csv"   # 2022年(含)以前的数据
-    file_cur = f"data/a/price/price_{symbol}_cur.csv"     # 2023年~当前的数据
+    file_2022 = f"data/a/stock/price/price_{symbol}_2022.csv"   # 2022年(含)以前的数据
+    file_cur = f"data/a/stock/price/price_{symbol}_cur.csv"     # 2023年~当前的数据
 
     p_symbol = PlatformSymbol(symbol, 'sinaprice')
     if down_2022:

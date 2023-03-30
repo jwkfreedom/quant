@@ -5,7 +5,7 @@ import talib
 
 
 def get_stock_price(symbol, fq="qfq"):
-    file_src=f"data/a/price/price_{symbol}_"
+    file_src=f"data/a/stock/price/price_{symbol}_"
 
     df_price_2022 = pd.read_csv(file_src + "2022.csv")
     df_price_cur = pd.read_csv(file_src + "cur.csv")
@@ -20,6 +20,16 @@ def get_stock_price(symbol, fq="qfq"):
     # df_price = df_price.loc["2023-02-06": "2023-03-10"]
     # print(df_price)
     return df_price
+
+# 读入financial 数据，
+def get_financail_data(symbol):
+    file_src=f"data/a/stock/financial/financial_report_{symbol}.csv"
+    df_org = pd.read_csv(file_src)
+    df = pd.DataFrame()
+    df['date'] = df_org['日期']
+    df['netprofit'] = df_org['扣除非经常性损益后的净利润(元)']
+    df['coreprofit'] = df_org['主营业务利润(元)']
+    return df
     
 
 # 由日期获得前复权的factor
@@ -56,7 +66,6 @@ def ana_stock(data):
     return data
 
 
-df = get_stock_price("300896")
+df = get_financail_data('000001')
 print(df)
-df = ana_stock(df)
 
