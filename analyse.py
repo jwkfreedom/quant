@@ -4,8 +4,8 @@ import numpy as np
 import talib
 
 
-def get_stock_data(symbol, fq="qfq"):
-    file_src=f"data/a/price_{symbol}_"
+def get_stock_price(symbol, fq="qfq"):
+    file_src=f"data/a/price/price_{symbol}_"
 
     df_price_2022 = pd.read_csv(file_src + "2022.csv")
     df_price_cur = pd.read_csv(file_src + "cur.csv")
@@ -21,8 +21,6 @@ def get_stock_data(symbol, fq="qfq"):
     # print(df_price)
     return df_price
     
-
-
 
 # 由日期获得前复权的factor
 # df 是前复权因子的dataframe
@@ -58,6 +56,7 @@ def ana_stock(data):
     return data
 
 
-df = get_stock_data("sz002508")
+df = get_stock_price("300896")
+print(df)
 df = ana_stock(df)
 

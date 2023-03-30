@@ -5,6 +5,7 @@
     stock_jibenmian: 单一股票的基本面详细数据
 
     stock_price_all: 下载所有股票日线数据
+    stock_price: 下载单一股票的日线数据
 """
 import akshare as ak
 import pandas as pd
@@ -104,8 +105,8 @@ def stock_jibenmian(symbol, delay, jbm_type=None):
 # A股股票日线数据，整合了前复权和未复权数据到一张表里
 # down_2022: 是否下载2022年之前的数据
 def stock_price(symbol, down_2022=False):
-    file_2022 = f"data/a/price_{symbol}_2022.csv"   # 2022年(含)以前的数据
-    file_cur = f"data/a/price_{symbol}_cur.csv"     # 2023年~当前的数据
+    file_2022 = f"data/a/price/price_{symbol}_2022.csv"   # 2022年(含)以前的数据
+    file_cur = f"data/a/price/price_{symbol}_cur.csv"     # 2023年~当前的数据
 
     p_symbol = PlatformSymbol(symbol, 'sinaprice')
     if down_2022:
@@ -171,4 +172,5 @@ def PlatformSymbol(stockId, platform="") :
 # stock_jibenmian("600111", 0)
 
 
-jibenmian_all()
+#cjibenmian_all()
+stock_price("300896", True)
