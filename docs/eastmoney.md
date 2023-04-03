@@ -4,7 +4,7 @@
 
 
 ### 数据说明
-<details> <summary> 现金流数据</summary>
+<details> <summary> 现金流数据 xjll</summary>
 
 ```
 type CashflowData struct {
@@ -268,7 +268,7 @@ type CashflowData struct {
 </details> 
 
 
-<details> <summary> 利润表</summary>
+<details> <summary> 利润表 lrb</summary>
 
 ```
 type GincomeData struct {
@@ -478,8 +478,8 @@ type GincomeData struct {
 }
 ```
 </details> 
-<details> <summary> 财务数据</summary>
 
+<details> <summary> 财务数据 financial</summary>
 日期,  
 摊薄每股收益(元), 加权每股收益(元), 每股收益_调整后(元), 扣除非经常性损益后的每股收益(元), 
 每股净资产_调整前(元), 每股净资产_调整后(元), 
