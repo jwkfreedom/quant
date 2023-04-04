@@ -1,7 +1,7 @@
 import pandas as pd
 
 import numpy as np
-import talib
+import talib 
 
 
 def get_stock_price(symbol, fq="qfq"):
@@ -64,6 +64,7 @@ def ana_stock(data):
     print(data[data['signal']>0])
 
     return data
+
 
 
 df = get_financail_data('000001')
