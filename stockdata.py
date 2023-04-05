@@ -52,6 +52,7 @@ def load_jibenmian(season_start, beforedays=90):
         df = pd.merge(df_zcfz, df_lrb, on='股票代码')
         df = pd.merge(df_xjll, df, on='股票代码')
         df['DATE'] = season
+        df['iDATE'] = int(season)
         dfs.append(df)
 
     dftotal = pd.concat(dfs, ignore_index=False)
@@ -62,10 +63,10 @@ def load_jibenmian(season_start, beforedays=90):
     整理load_jibenmian 返回基本面数据，删除数据不全的股票
 """
 def rm_broken_stocks(df):
-    df['DATE_NUM'] = pd.to_numeric(df['DATE'], errors='coerce')
+    # df['DATE_NUM'] = pd.to_numeric(df['DATE'], errors='coerce')
     # Then, find the maximum value in the column
-    max_val = df['DATE_NUM'].max()
-    min_val = df['DATE_NUM'].min()
+    max_val = df['iDATE'].max()
+    min_val = df['iDATE'].min()
 
     season_start = str(min_val)
     season_end = str(max_val)
@@ -87,3 +88,34 @@ def rm_broken_stocks(df):
     return df_result
 
 
+
+
+def growth_score(df):
+    stockIdSet = set(df['股票代码'].unique())
+    seasonSet = set(df['iDATE'].unique())
+
+    seasons = sorted_array = sorted(list(seasonSet))
+
+    dfgrow = pd.DataFrame()
+    dfgrow['股票代码'] = list(stockIdSet)
+
+    for stockId in stockIdSet:
+        score = 0
+        for season in seasons:
+            score += df.loc[df'']
+        
+
+    return
+
+
+
+
+
+
+
+
+#------------------------
+df = load_jibenmian('2021-01-01')
+df = rm_broken_stocks(df)
+df = growth_score(df)
+print(df)
