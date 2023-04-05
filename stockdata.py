@@ -1,3 +1,8 @@
+"""    
+    get_seasondate  获得 季报日期列表
+    load_jibenmian  读取并合并 data/a/jibenmian 目录下多个季度的数据
+    rm_broken_stocks 整理load_jibenmian 返回基本面数据，删除数据不全的股票
+"""
 import pandas as pd
 import datetime as dt
 
@@ -14,7 +19,6 @@ def get_seasondate(start_date, beforedays=90):
 
     # Get date 3 months ago
     end_date = dt.date.today() - dt.timedelta(beforedays)
-    print(end_date)
     end_year = int(end_date.strftime('%Y'))
     end_season = int(end_date.strftime('%Y%m%d'))
 
@@ -29,10 +33,57 @@ def get_seasondate(start_date, beforedays=90):
     return seasons
 
 
-print(get_seasondate('2010-01-04'))
+"""
+    读取并合并 data/a/jibenmian 目录下多个季度的数据
+        season_start : 起始季度  格式: '2010-03-01'
+        beforedays:   截至到多少天前  缺省为90天，即上季度
+        
+"""
+def load_jibenmian(season_start, beforedays=90):
+    seasons = get_seasondate(season_start, beforedays)
+    src_dir = 'data/a/jibenmian'
 
-    
+    dfs = []
+    for season in seasons:
+        df_zcfz = pd.read_csv(f'{src_dir}/zcfz_{season}.csv')
+        df_lrb = pd.read_csv(f'{src_dir}/lrb_{season}.csv')
+        df_xjll = pd.read_csv(f'{src_dir}/xjll_{season}.csv')
+
+        df = pd.merge(df_zcfz, df_lrb, on='股票代码')
+        df = pd.merge(df_xjll, df, on='股票代码')
+        df['DATE'] = season
+        dfs.append(df)
+
+    dftotal = pd.concat(dfs, ignore_index=False)
+    return dftotal
     
 
+"""
+    整理load_jibenmian 返回基本面数据，删除数据不全的股票
+"""
+def rm_broken_stocks(df):
+    df['DATE_NUM'] = pd.to_numeric(df['DATE'], errors='coerce')
+    # Then, find the maximum value in the column
+    max_val = df['DATE_NUM'].max()
+    min_val = df['DATE_NUM'].min()
+
+    season_start = str(min_val)
+    season_end = str(max_val)
+
+    df_end = df.loc[df['DATE'] == season_end]
+    set_end = set(df_end['股票代码'].unique())
+
+    df_start = df.loc[df['DATE'] == season_start]
+    set_start = set(df_start['股票代码'].unique())
+
+    # Find values that are in df1 but not in df2
+    diff1 = set_start - set_end
+    diff2 = set_end - set_start
+
+    diff = diff1 | diff2
+
+    df_diff = df['股票代码'].isin(diff)
+    df_result = df[~df_diff]
+    return df_result
 
 

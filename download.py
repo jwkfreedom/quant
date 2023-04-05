@@ -173,5 +173,4 @@ def PlatformSymbol(stockId, platform="") :
 # stock_jibenmian("600111", 0)
 
 
-#cjibenmian_all()
-stock_price("300896", True)
+jibenmian_all_fast('zcfz', 2022, 2023, ["{year}1231"])
