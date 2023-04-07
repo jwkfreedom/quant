@@ -65,30 +65,6 @@ def load_jibenmian(season_start, beforedays=90):
 def rm_broken_stocks(df):
     # df['DATE_NUM'] = pd.to_numeric(df['DATE'], errors='coerce')
     # Then, find the maximum value in the column
-    """
-    max_val = df['iDATE'].max()
-    min_val = df['iDATE'].min()
-
-    season_start = str(min_val)
-    season_end = str(max_val)
-    print(f"rm_broken_stocks  {season_start} => {season_end}")
-
-    df_end = df.loc[df['DATE'] == season_end]
-    set_end = set(df_end['股票代码'].unique())
-
-    df_start = df.loc[df['DATE'] == season_start]
-    set_start = set(df_start['股票代码'].unique())
-
-    # Find values that are in df1 but not in df2
-    diff1 = set_start - set_end
-    print(set_start)
-    diff2 = set_end - set_start
-
-    diff = diff1 | diff2
-
-    df_diff = df['股票代码'].isin(diff)
-    df_result = df[~df_diff]
-    """
     seasonSet = set(df['iDATE'].unique())
 
     set_list=[]
@@ -104,56 +80,54 @@ def rm_broken_stocks(df):
 
     return df_result
 
+"""
+    获得前一个季报的id，季报id是一个8为整数，比如20120331
+"""
+def pre_season(year_season):
+    year = int(year_season / 10000)
+    season = year_season % 10000
+
+    pre_season_map = {331: 1231, 630: 331, 930: 630, 1231: 930}
+    
+    pre_season = pre_season_map[season]
+    if pre_season > season:
+        return (year - 1) * 10000 + pre_season
+    
+    return year * 10000 + pre_season
 
 
 
 def growth_score(df):
     stockIdSet = set(df['股票代码'].unique())
     seasonSet = set(df['iDATE'].unique())
+    seasons = sorted(list(seasonSet))
 
-    # 成长分数上下限为0~100
-    df['营业总收入同比'] = df['营业总收入同比'].clip(lower=0.0, upper=100.0)
-
-    dfgrow = df.groupby('股票代码')['营业总收入同比'].mean()
-    
-    # 经营规模
-    dfscale = df.groupby('股票代码')['营业总收入'].max()
-    
-
-    #seasons = sorted_array = sorted(list(seasonSet))
-    #dfgrow = pd.DataFrame()
-    #dfgrow['股票代码'] = list(stockIdSet)
-
-    #dfgrow['股票代码', 'score'] = df[]
-    """
     for stockId in stockIdSet:
         score = 0
         for season in seasons:
-            season_score = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), '营业总收入同比']
-            season_score = max(0, season_score)
-            season_score = min(100, season_score)
+            growth = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), '营业总收入同比']
 
-            score += season_score
         
         print(f"stockId={stockId}, score={score}")
-    """
-            
+    
 
-    return dfscale
 
-#df.loc[df['other_col'] == 'value1', 'col1'] *= 0.2
-#df.loc[df['other_col'] == 'value2', 'col1'] *= 0.3
+    return df
 
 
 
-
-
+        
+    
 
 
 
 
 #------------------------
-df = load_jibenmian('2021-01-01')
-df = rm_broken_stocks(df)
-df = growth_score(df)
-print(df)
+#df = load_jibenmian('2021-01-01')
+#df = rm_broken_stocks(df)
+#print(df)
+
+print(pre_season(20110630))
+
+
+

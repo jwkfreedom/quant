@@ -26,3 +26,21 @@ financial
 pe倒数 = 每股收益_调整后(元) / 股价
 pb = 股价 / 每股净资产_调整后(元)
 ps = 总市值 / 营业总收入
+
+
+## 计算例子
+```
+    # 成长分数上下限为0~100
+    df['营业总收入同比'] = df['营业总收入同比'].clip(lower=0.0, upper=100.0)
+
+    dfgrow = df.groupby('股票代码')['营业总收入同比'].mean()
+    # 经营规模
+    dfscale = df.groupby('股票代码')['营业总收入'].max()
+
+    df.loc[df['other_col'] == 'value1', 'col1'] *= 0.2
+
+
+    factor_map = {1: 2, 2: 2.5, 3: 3.6}
+    df['A'] = df.apply(lambda row: row['A'] * factor_map[row['B']], axis=1)
+
+```
