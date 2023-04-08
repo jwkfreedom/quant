@@ -75,7 +75,6 @@ def rm_broken_stocks(df):
     
     # 找出所有季报的stock的交集，即在这些季报中都存在stock
     common_elements = set.intersection(*set_list)
-    print(common_elements)
     df_result = df[df['股票代码'].isin(common_elements)]
 
     return df_result
@@ -102,20 +101,36 @@ def growth_score(df):
     seasonSet = set(df['iDATE'].unique())
     seasons = sorted(list(seasonSet))
 
-    for stockId in stockIdSet:
-        score = 0
-        for season in seasons:
-            growth = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), '营业总收入同比']
-
-        
-        print(f"stockId={stockId}, score={score}")
+    if seasons[0] % 10000 != 331:
+        print(f"first season should be XXXX0331. Now is {seasons[0]}")
+        return
     
-
+    for stockId in stockIdSet:
+        calc_season_growth(df, stockId, seasons)
 
     return df
 
+def calc_season_growth(df, stockId, seasons): 
+    for season in seasons:
+        totalGrowth = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), '营业总收入同比']
+        preYearIncome =  df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), '营业总收入'] / (1 + totalGrowth / 100.0)
+        income = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), '营业总收入']
+        df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), 'preYearIncome'] = preYearIncome
 
+        if season % 10000 == 331:   # 每年第一季度，单季增长不用特殊计算
+            df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), 'SeasonGrowth'] = totalGrowth
+            df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), 'SeasonIncome'] = income
+        else:
+            income = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), '营业总收入'].item()
+            preTotalIncome = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== pre_season(season)), '营业总收入'].item()
+            seasonIncome = income - preTotalIncome
+            df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), 'SeasonIncome'] = seasonIncome
+            preYearSeasonIncome = preYearIncome - df.loc[(df['股票代码'] == stockId) & (df['iDATE']== pre_season(season)), 'preYearIncome'].item()
+            growth = (seasonIncome / preYearSeasonIncome - 1) * 100
+            df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), 'SeasonGrowth'] = growth
+    return df
 
+    
         
     
 
@@ -123,11 +138,13 @@ def growth_score(df):
 
 
 #------------------------
-#df = load_jibenmian('2021-01-01')
-#df = rm_broken_stocks(df)
+df = load_jibenmian('2021-01-01')
+df = rm_broken_stocks(df)
+df = growth_score(df)
+df.to_csv('data/temp.csv',index=False, encoding='utf_8_sig')
 #print(df)
 
-print(pre_season(20110630))
+# print(pre_season(20110630))
 
 
 
