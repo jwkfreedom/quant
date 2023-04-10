@@ -106,28 +106,40 @@ def growth_score(df):
         return
     
     for stockId in stockIdSet:
-        calc_season_growth(df, stockId, seasons)
+        df = calc_season_growth(df, stockId, seasons, '营业总收入')
+
+    for stockId in stockIdSet:
+        df = calc_season_growth(df, stockId, seasons, '净利润')
+
 
     return df
 
-def calc_season_growth(df, stockId, seasons): 
+
+# type: "营业总收入" or "净利润"
+def calc_season_growth(df, stockId, seasons, type): 
+    typeTongbi = type + "同比"  # 营业总收入 or 净利润同比
+    nameMap = {"营业总收入": ['preYearIncome', 'SeasonIncome', 'SeasonIncomeGrowth'], "净利润":['preYearProfit', 'SeasonProfit', 'SeasonProfitGrowth']}
+    preYear = nameMap[type][0]
+    seasonName = nameMap[type][1]
+    seasonGrowthName = nameMap[type][2]
+
     for season in seasons:
-        totalGrowth = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), '营业总收入同比']
-        preYearIncome =  df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), '营业总收入'] / (1 + totalGrowth / 100.0)
-        income = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), '营业总收入']
-        df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), 'preYearIncome'] = preYearIncome
+        totalGrowth = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), typeTongbi]
+        preYearValue =  df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), type] / (1 + totalGrowth / 100.0)
+        income = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), type]
+        df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), preYear] = preYearValue
 
         if season % 10000 == 331:   # 每年第一季度，单季增长不用特殊计算
-            df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), 'SeasonGrowth'] = totalGrowth
-            df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), 'SeasonIncome'] = income
+            df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), seasonGrowthName] = totalGrowth
+            df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), seasonName] = income
         else:
-            income = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), '营业总收入'].item()
-            preTotalIncome = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== pre_season(season)), '营业总收入'].item()
+            income = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), type].item()
+            preTotalIncome = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== pre_season(season)), type].item()
             seasonIncome = income - preTotalIncome
-            df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), 'SeasonIncome'] = seasonIncome
-            preYearSeasonIncome = preYearIncome - df.loc[(df['股票代码'] == stockId) & (df['iDATE']== pre_season(season)), 'preYearIncome'].item()
+            df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), seasonName] = seasonIncome
+            preYearSeasonIncome = preYearValue - df.loc[(df['股票代码'] == stockId) & (df['iDATE']== pre_season(season)), preYear].item()
             growth = (seasonIncome / preYearSeasonIncome - 1) * 100
-            df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), 'SeasonGrowth'] = growth
+            df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), seasonGrowthName] = growth
     return df
 
     
