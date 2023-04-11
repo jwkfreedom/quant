@@ -98,6 +98,8 @@ def pre_season(year_season):
 
 def growth_score(df):
     stockIdSet = set(df['股票代码'].unique())
+    print(f"共有 {len(stockIdSet)} 个股票数据")
+
     seasonSet = set(df['iDATE'].unique())
     seasons = sorted(list(seasonSet))
 
@@ -150,10 +152,10 @@ def calc_season_growth(df, stockId, seasons, type):
 
 
 #------------------------
-df = load_jibenmian('2021-01-01')
-df = rm_broken_stocks(df)
-df = growth_score(df)
-df.to_csv('data/temp.csv',index=False, encoding='utf_8_sig')
+# df = load_jibenmian('2021-01-01')
+# df = rm_broken_stocks(df)
+# df = growth_score(df)
+# df.to_csv('data/temp.csv',index=False, encoding='utf_8_sig')
 #print(df)
 
 # print(pre_season(20110630))
