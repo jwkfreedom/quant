@@ -52,10 +52,10 @@ def jibenmian_all():
         stock_jibenmian(stockId, 0)
 
 # 获取所有股价的日K
-def stock_price_all(down_2022=False):
+def stock_price_all(down_pre=False):
     stockIds = all_a_stocks()
     for stockId in stockIds:
-        stock_price(stockId, down_2022)
+        stock_price(stockId, down_pre)
 
 # ----- 下载 一只股票的基本面数据 ------
     """
@@ -105,30 +105,50 @@ def stock_jibenmian(symbol, delay, jbm_type=None):
 # ------ 下载股票日线数据 ------
 # A股股票日线数据，整合了前复权和未复权数据到一张表里
 # down_2022: 是否下载2022年之前的数据
-def stock_price(symbol, down_2022=False):
-    file_2022 = f"data/a/stock/price/price_{symbol}_2022.csv"   # 2022年(含)以前的数据
+def stock_price(symbol, down_preyear=False):
+    thisyear = int(datetime.datetime.now().strftime("%Y"))
+    preyear = thisyear - 1
+
+    file_pre = f"data/a/stock/price/price_{symbol}_pre.csv"   # 2022年(含)以前的数据
     file_cur = f"data/a/stock/price/price_{symbol}_cur.csv"     # 2023年~当前的数据
+    p_symbol = PlatformSymbol(symbol)
 
-    p_symbol = PlatformSymbol(symbol, 'sinaprice')
-    if down_2022:
-        df_stock_2022 = ak.stock_zh_a_daily(symbol=p_symbol, start_date="20100101", end_date="20221231", adjust="")
-        df_stock_2022_qfq = ak.stock_zh_a_daily(symbol=p_symbol, start_date="20100101", end_date="20221231", adjust="qfq")
-        copy_qfq_data(df_stock_2022_qfq, df_stock_2022)
-        df_stock_2022.to_csv(file_2022)
+    if not os.path.exists(file_pre):
+        try:
+            if down_preyear:
+                end_date = f"{preyear}1231"
+                df_stock_pre = ak.stock_zh_a_hist (symbol=p_symbol, period="daily", start_date="20100101", end_date=end_date, adjust="")
+                df_stock_pre_qfq = ak.stock_zh_a_hist (symbol=p_symbol, period="daily", start_date="20100101", end_date=end_date, adjust="qfq")
+                copy_qfq_data(df_stock_pre_qfq, df_stock_pre)
+                df_stock_pre.to_csv(file_pre)
+        except:
+            print(f"exec stock_price error: stock={symbol}, type=pre")
+        else:
+            print(f"exec stock_price ok: stock={symbol}, type=pre")
+    else:
+        print(f"exec stock_price skip: stock={symbol}, type=pre")
 
+    thisyear_start = f"{thisyear}0101"
     cur_date = datetime.datetime.now().strftime("%Y%m%d")   # YYYYMMDD
-    df_stock_cur = ak.stock_zh_a_daily(symbol=p_symbol, start_date="20230101", end_date=cur_date, adjust="")
-    df_stock_cur_qfq = ak.stock_zh_a_daily(symbol=p_symbol, start_date="20230101", end_date=cur_date, adjust="qfq")
-    copy_qfq_data(df_stock_cur_qfq, df_stock_cur)
-    df_stock_cur.to_csv(file_cur)
 
-
+    if not os.path.exists(file_cur):
+        try:
+            df_stock_cur = ak.stock_zh_a_hist(symbol=p_symbol, period="daily", start_date=thisyear_start, end_date=cur_date, adjust="")
+            df_stock_cur_qfq = ak.stock_zh_a_hist(symbol=p_symbol, period="daily", start_date=thisyear_start, end_date=cur_date, adjust="qfq")
+            copy_qfq_data(df_stock_cur_qfq, df_stock_cur)
+            df_stock_cur.to_csv(file_cur)
+        except:
+            print(f"exec stock_price error: stock={symbol}, type=cur")
+        else:
+            print(f"exec stock_price ok: stock={symbol}, type=cur")
+    else:
+        print(f"exec stock_price skip: stock={symbol}, type=cur")
 
 
 # 把前复权的数据拷贝到没有前复权的数据中
 # dfqfq: 前复权的股票价格
 def copy_qfq_data(dfqfq, df):
-    columns=['open','high','low','close']
+    columns=['开盘','收盘','最高','最低']
 
     for column in columns:
         df[f'{column}_qfq'] = dfqfq[column]
@@ -169,7 +189,7 @@ def PlatformSymbol(stockId, platform="") :
 
 # jibenmian('xjll', 2022, 2023)
 # jibenmian_details()
-# stock_price("600036", True)
+stock_price("600036", True)
 # stock_jibenmian("600111", 0)
 
 

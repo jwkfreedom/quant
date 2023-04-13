@@ -1,6 +1,7 @@
 import download as dl
 import stockdata as sd
 import pandas as pd
+import osutil as osutil
 
 def download_a_jibenmian():
     # 下载2022年4季度
@@ -27,6 +28,16 @@ def calc_a_growth(startYear, file):
     df.to_csv(file,index=False, encoding='utf_8_sig')
 
 
+def download_a_price_yearly():
+    osutil.clear_price_a_files('pre')
+    osutil.clear_price_a_files('cur')
+    dl.stock_price_all(True)
+
+def download_a_price_cur():
+    osutil.clear_price_a_files('cur')
+    dl.stock_price_all(False)
+
 
 # download_a_jibenmian()
-calc_a_growth(2021, 'data/202101-202204.csv')
+# calc_a_growth(2021, 'data/202101-202204.csv')
+download_a_price_yearly()

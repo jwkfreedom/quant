@@ -1,6 +1,26 @@
 import os
 import shutil
 
+# type: 'pre' or 'cur'
+# 将指定type的日线数据move到 data/a/stock/temp 目录
+def clear_price_a_files(type):
+    src_dir = 'data/a/stock/price'
+
+    # 目标目录
+    dst_dir = 'data/a/stock/temp'
+
+    endfilter = f'{type}.csv'
+    # 遍历源目录下所有文件
+    for file_name in os.listdir(src_dir):
+        # 判断文件名是否以'abc.csv'结尾
+        if file_name.endswith(endfilter):
+            # 构造源文件路径和目标文件路径
+            src_file_path = os.path.join(src_dir, file_name)
+            dst_file_path = os.path.join(dst_dir, file_name)
+            # 移动文件
+            shutil.move(src_file_path, dst_file_path)
+
+
 # 把子目录中所有SZXXX目录名改为XXX
 def rename_fold():
     path = "data/a"
@@ -38,4 +58,3 @@ def move_file_byprefix(directory):
                 # Move file to XXX directory
                 shutil.move(os.path.join(subdir, file), os.path.join(directory, xxx, file))
 
-# move_file_byprefix('data/a/stock')

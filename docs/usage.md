@@ -21,3 +21,7 @@ process.py
 | preYearProfit | 前一年当季利润 |
 | SeasonProfit | 当季利润 |
 | SeasonProfitGrowth | 当季利润增长 |
+
+## 下载 所有股票的日线数据
+每年 执行一次 process.py 中 download_a_price_yearly() 函数, 这样可以更新之前的数据
+如果需要更新最新的数据，执行 process.py 中的 download_a_price_cur() 函数
