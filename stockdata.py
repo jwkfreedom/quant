@@ -2,6 +2,9 @@
     get_seasondate  获得 季报日期列表
     load_jibenmian  读取并合并 data/a/jibenmian 目录下多个季度的数据
     rm_broken_stocks 整理load_jibenmian 返回基本面数据，删除数据不全的股票
+    growth_score 计算每个季度单独的数据
+    
+    get_stock_price 读取一个股票的日线数据
 """
 import pandas as pd
 import datetime as dt
@@ -117,7 +120,10 @@ def growth_score(df):
     return df
 
 
+#
+# 计算一个股票的所有季度的单季数据
 # type: "营业总收入" or "净利润"
+#
 def calc_season_growth(df, stockId, seasons, type): 
     typeTongbi = type + "同比"  # 营业总收入 or 净利润同比
     nameMap = {"营业总收入": ['preYearIncome', 'SeasonIncome', 'SeasonIncomeGrowth'], "净利润":['preYearProfit', 'SeasonProfit', 'SeasonProfitGrowth']}
@@ -144,13 +150,32 @@ def calc_season_growth(df, stockId, seasons, type):
             df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), seasonGrowthName] = growth
     return df
 
+#
+#  读取一个股票的日线数据
+#     
+def get_stock_price(symbol):
+    file_src=f"data/a/stock/price/price_{symbol}_"
+
+    df_price_pre = pd.read_csv(file_src + "pre.csv")
+    df_price_cur = pd.read_csv(file_src + "cur.csv")
+    df_price = pd.concat([df_price_pre, df_price_cur])
+    df_price.index = pd.DatetimeIndex(df_price['日期'])
+
+    #,,,,,,,,,,,开盘_qfq,收盘_qfq,最高_qfq,最低_qfq
+    columns = {"开盘": "open" , "日期": "date", "收盘": "close", "最高": "high", "最低": "low", "开盘_qfq": "open_qfq","收盘_qfq":"close_qfq","最高_qfq": "high_qfq","最低_qfq":"low_qfq",
+               "成交量": "volumn", "成交额": "turnover", "振幅":"amp", "涨跌幅": "percent_change", "涨跌额": "value_change", "换手率":"turnover_rate"}
+
+    df_price.rename(columns=columns, inplace=True)
+
+
+    price_columns = ['open', 'close', 'high', 'low']
+    for price_column in price_columns:
+        df_price[f"{price_column}_org"] = df_price[price_column]
     
-        
-    
+    for price_column in price_columns:
+        df_price[price_column] = df_price[f"{price_column}_qfq"]
 
-
-
-
+    return df_price
 #------------------------
 # df = load_jibenmian('2021-01-01')
 # df = rm_broken_stocks(df)
@@ -159,6 +184,9 @@ def calc_season_growth(df, stockId, seasons, type):
 #print(df)
 
 # print(pre_season(20110630))
+
+#df = get_stock_price('000001')
+#print(df)
 
 
 

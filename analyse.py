@@ -1,23 +1,10 @@
 import pandas as pd
-
 import numpy as np
-# import talib 
+import talib 
+import stockdata as sd
 
 
-def get_stock_price(symbol):
-    file_src=f"data/a/stock/price/price_{symbol}_"
 
-    df_price_pre = pd.read_csv(file_src + "pre.csv")
-    df_price_cur = pd.read_csv(file_src + "cur.csv")
-    df_price = pd.concat([df_price_pre, df_price_cur])
-    df_price.index = pd.DatetimeIndex(df_price['日期'])
-
-    #,,,,,,,,,,,开盘_qfq,收盘_qfq,最高_qfq,最低_qfq
-    columns = {"开盘": "open" , "日期": "date", "收盘": "close", "最高": "high", "最低": "low", "开盘_qfq": "open_qfq","收盘_qfq":"close_qfq","最高_qfq": "hight_qfq","最低_qfq":"low_qfq",
-               "成交量": "volumn", "成交额": "turnover", "振幅":"amp", "涨跌幅": "percent_change", "涨跌额": "value_change", "换手率":"turnover_rate"}
-
-    df_price.rename(columns=columns, inplace=True)
-    return df_price
 
 # 读入financial 数据，
 def get_financail_data(symbol):
@@ -65,6 +52,6 @@ def ana_stock(data):
 
 
 
-df = get_stock_price('000001')
-print(df)
+#df = get_stock_price('000001')
+#print(df)
 

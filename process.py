@@ -40,4 +40,4 @@ def download_a_price_cur():
 
 # download_a_jibenmian()
 # calc_a_growth(2021, 'data/202101-202204.csv')
-download_a_price_yearly()
+# download_a_price_yearly()
