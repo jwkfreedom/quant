@@ -8,8 +8,8 @@
 """
 import pandas as pd
 import datetime as dt
-
-
+import backtrader as bt
+from datetime import datetime
 #  获得 季报日期列表，
 #   input: start_date(格式: '2010-01-04')
 #           beforedays: 截止日期为多少天前
@@ -176,6 +176,8 @@ def get_stock_price(symbol):
         df_price[price_column] = df_price[f"{price_column}_qfq"]
 
     return df_price
+
+
 #------------------------
 # df = load_jibenmian('2021-01-01')
 # df = rm_broken_stocks(df)
