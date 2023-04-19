@@ -21,7 +21,7 @@ class MyStrategy(bt.Strategy):
         if self.order:
             return
             
-        if self.datavolume[0] > 3 * self.avg_volume[0]:
+        if self.datavolume[0] < 0.4 * self.avg_volume[0]:
             self.order = self.buy()
                 
         if self.order:
@@ -53,6 +53,8 @@ class MyStrategy(bt.Strategy):
             return
         
         self.log(f'OPERATION PROFIT, GROSS {trade.pnl:.2f}, NET {trade.pnlcomm:.2f}')
+    def log(slef, str):
+        print(str)
         
 cerebro = bt.Cerebro()
 
