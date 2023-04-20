@@ -204,7 +204,11 @@ df_financial['iDATE'] = pd.to_numeric(df_financial['DATE'], errors='coerce')
 seasonSet = set(df_financial['iDATE'].unique())
 seasons = sorted(list(seasonSet))
 
-
+df = df_financial
+for season in seasons:
+    preyearSeason = df.loc[df['iDATE']==season, 'iDATE'].item() - 10000
+    preyear = int(preyearSeason / 10000)
+    preyearEnd = preyear * 10000 + 1231
 
 
 
