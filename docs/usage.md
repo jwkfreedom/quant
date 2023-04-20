@@ -9,7 +9,7 @@ process.py
 process.py
 ```python
     编辑并运行 calc_a_growth()
-    导出的csv是一个所有股票多季度基本数据 
+    导出的csv是一个 所有股票 多季度 基本数据 (合并data/a/jibenmian/ 下的所有指定时间范围内的文件)
 
     # ['iDATE', 'preYearIncome', 'SeasonIncome', 'SeasonIncomeGrowth', 'preYearProfit', 'SeasonProfit', 'SeasonProfitGrowth']
 ```

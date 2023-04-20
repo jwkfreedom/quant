@@ -45,8 +45,7 @@ class MyStrategy(bt.Strategy):
             self.order = None
             
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
-            # self.log('Order Canceled/Margin/Rejected')
-            print('Order Canceled/Margin/Rejected')
+            self.log('Order Canceled/Margin/Rejected')
             
     def notify_trade(self, trade):
         if not trade.isclosed:

@@ -36,6 +36,7 @@ def get_seasondate(start_date, beforedays=90):
     return seasons
 
 
+
 """
     读取并合并 data/a/jibenmian 目录下多个季度的数据
         season_start : 起始季度  格式: '2010-03-01'
@@ -189,6 +190,22 @@ def get_stock_price(symbol):
 
 #df = get_stock_price('000001')
 #print(df)
+symbol = '000001'
+df_financial = pd.read_csv(f"data/a/stock/financial/financial_report_{symbol}.csv")
+df_financial['每股收益_调整后(元)'] = pd.to_numeric(df_financial['每股收益_调整后(元)'], errors='coerce')
+
+# Use dropna method to drop rows with non-numeric values in the specified column
+df_financial.dropna(subset=['每股收益_调整后(元)'], inplace=True)
+
+df_financial['DATE'] = df_financial['日期'].str.replace('-', '')
+df_financial['iDATE'] = pd.to_numeric(df_financial['DATE'], errors='coerce')
+
+
+seasonSet = set(df_financial['iDATE'].unique())
+seasons = sorted(list(seasonSet))
 
 
 
+
+
+print(df_financial.loc[:, ['iDATE', '每股收益_调整后(元)']])
