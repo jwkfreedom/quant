@@ -84,9 +84,9 @@ def rm_broken_stocks(df):
     return df_result
 
 """
-    获得前一个季报的id，季报id是一个8为整数，比如20120331
+    获得去年同一个财季的季报id，季报id是一个8为整数，比如20120331
 """
-def pre_season(year_season):
+def pre_year_season(year_season):
     year = int(year_season / 10000)
     season = year_season % 10000
 
@@ -95,10 +95,25 @@ def pre_season(year_season):
     pre_season = pre_season_map[season]
     if pre_season > season:
         return (year - 1) * 10000 + pre_season
-    
     return year * 10000 + pre_season
 
 
+# date格式: '2012-12-21'
+# 获得 季报的iDATE 20120930
+def get_season_iDATE(date):
+    iDATE = int(date.str.replace('-', ''))
+    year = int(iDATE / 10000)
+    monthday = iDATE % 10000
+    if monthday < 331:
+        iDATE = (year - 1) * 10000 + 1231
+    elif monthday < 630: 
+        iDATE = year * 10000 + 331
+    elif monthday < 930:
+        iDATE = year * 10000 + 630
+    else:
+        iDATE = year * 10000 + 930
+    
+    return iDATE
 
 def growth_score(df):
     stockIdSet = set(df['股票代码'].unique())
@@ -143,10 +158,10 @@ def calc_season_growth(df, stockId, seasons, type):
             df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), seasonName] = income
         else:
             income = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), type].item()
-            preTotalIncome = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== pre_season(season)), type].item()
+            preTotalIncome = df.loc[(df['股票代码'] == stockId) & (df['iDATE']== pre_year_season(season)), type].item()
             seasonIncome = income - preTotalIncome
             df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), seasonName] = seasonIncome
-            preYearSeasonIncome = preYearValue - df.loc[(df['股票代码'] == stockId) & (df['iDATE']== pre_season(season)), preYear].item()
+            preYearSeasonIncome = preYearValue - df.loc[(df['股票代码'] == stockId) & (df['iDATE']== pre_year_season(season)), preYear].item()
             growth = (seasonIncome / preYearSeasonIncome - 1) * 100
             df.loc[(df['股票代码'] == stockId) & (df['iDATE']== season), seasonGrowthName] = growth
     return df
@@ -190,26 +205,89 @@ def get_stock_price(symbol):
 
 #df = get_stock_price('000001')
 #print(df)
+
+
+#
+# df = calc_ttm(df, '摊薄每股收益(元)', 'profitTTM')
+# df = calc_ttm(df, '每股净资产_调整后(元)', 'netassetTTM')
+#
+def calc_ttm(df, NameProfit, TTMName):
+    df[NameProfit] = pd.to_numeric(df[NameProfit], errors='coerce')
+    # Use dropna method to drop rows with non-numeric values in the specified column
+    df.dropna(subset=[NameProfit], inplace=True)
+
+    if not 'iDATE' in df.columns:
+        print("=============")
+        df['DATE'] = df['日期'].str.replace('-', '')
+        df['iDATE'] = pd.to_numeric(df['DATE'], errors='coerce')
+        df.drop(df[df['iDATE'] < 20110101].index, inplace=True)
+
+    seasonSet = set(df['iDATE'].unique())
+    seasons = sorted(list(seasonSet))
+
+    for season in seasons:
+        preyearSeason = df.loc[df['iDATE']==season, 'iDATE'].item() - 10000
+        preyear = int(preyearSeason / 10000)
+        preyearEnd = preyear * 10000 + 1231
+        
+        seasonProfit = df.loc[df['iDATE']==season, NameProfit].item()
+        if (not df.loc[df['iDATE']==preyearSeason].empty) and (not df.loc[df['iDATE']==preyearEnd].empty):
+            preyearSeasonProfit = df.loc[df['iDATE']==preyearSeason, NameProfit].item()
+            preyearEndProfit = df.loc[df['iDATE']==preyearEnd, NameProfit].item()
+            ttmValue = preyearEndProfit - preyearSeasonProfit + seasonProfit
+            df.loc[df['iDATE']==season, TTMName] = ttmValue
+        else:
+            df.loc[df['iDATE']==season, TTMName] = '--'
+
+
+    df.drop(df[df['profitTTM'] == '--'].index, inplace=True)
+    return df
+
+
+#
+# 每股净资产_调整后(元) 数据有缺陷，需要用 每股净资产_调整前(元) 来计算调整
+#
+def fix_financial_data(df):
+    df['DATE'] = df['日期'].str.replace('-', '')
+    df['iDATE'] = pd.to_numeric(df['DATE'], errors='coerce')
+
+    seasonSet = set(df['iDATE'].unique())
+    seasons = sorted(list(seasonSet))
+
+    diff = 0
+
+    NAME_PREFIX = '每股净资产_调整前(元)'
+    NAME_POSTFIX = '每股净资产_调整后(元)'
+
+    df[NAME_PREFIX] = pd.to_numeric(df[NAME_PREFIX], errors='coerce')
+    df[NAME_POSTFIX] = pd.to_numeric(df[NAME_POSTFIX], errors='coerce')
+
+    for season in seasons:
+        seasonPreFix = df.loc[df['iDATE']==season, NAME_PREFIX]
+        seasonPostFix = df.loc[df['iDATE']==season, NAME_POSTFIX]
+        if pd.isna(seasonPostFix.item()):
+            value = seasonPreFix.item() - diff
+            df.loc[df['iDATE']==season, NAME_POSTFIX] = value
+            print(f"fix season={season}, value={value}")
+        else: 
+            diff = seasonPreFix.item() - seasonPostFix.item()
+
+    df.drop(df[df['iDATE'] < 20110101].index, inplace=True)
+    return
+
+def get_value_by_season(df, season, column):
+    return
+
 symbol = '000001'
-df_financial = pd.read_csv(f"data/a/stock/financial/financial_report_{symbol}.csv")
-df_financial['每股收益_调整后(元)'] = pd.to_numeric(df_financial['每股收益_调整后(元)'], errors='coerce')
+df = pd.read_csv(f'data/a/stock/financial/financial_report_{symbol}.csv')
+fix_financial_data(df)
+df = calc_ttm(df, '摊薄每股收益(元)', 'profitTTM')
 
-# Use dropna method to drop rows with non-numeric values in the specified column
-df_financial.dropna(subset=['每股收益_调整后(元)'], inplace=True)
-
-df_financial['DATE'] = df_financial['日期'].str.replace('-', '')
-df_financial['iDATE'] = pd.to_numeric(df_financial['DATE'], errors='coerce')
-
-
-seasonSet = set(df_financial['iDATE'].unique())
+seasonSet = set(df['iDATE'].unique())
 seasons = sorted(list(seasonSet))
+df_price = get_stock_price(symbol)
 
-df = df_financial
-for season in seasons:
-    preyearSeason = df.loc[df['iDATE']==season, 'iDATE'].item() - 10000
-    preyear = int(preyearSeason / 10000)
-    preyearEnd = preyear * 10000 + 1231
+df_price['profitTTM'] = df.loc[df['iDATE'] == get_season_iDATE(df_price['日期'].item()), 'profitTTM']
 
 
-
-print(df_financial.loc[:, ['iDATE', '每股收益_调整后(元)']])
+# print(df.loc[:, ['iDATE', 'profitTTM', '每股净资产_调整后(元)']]),
