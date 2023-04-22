@@ -101,7 +101,7 @@ def pre_year_season(year_season):
 # date格式: '2012-12-21'
 # 获得 季报的iDATE 20120930
 def get_season_iDATE(date):
-    iDATE = int(date.str.replace('-', ''))
+    iDATE = int(date.replace('-', ''))
     year = int(iDATE / 10000)
     monthday = iDATE % 10000
     if monthday < 331:
@@ -175,7 +175,7 @@ def get_stock_price(symbol):
     df_price_pre = pd.read_csv(file_src + "pre.csv")
     df_price_cur = pd.read_csv(file_src + "cur.csv")
     df_price = pd.concat([df_price_pre, df_price_cur])
-    df_price.index = pd.DatetimeIndex(df_price['日期'])
+    # df_price.index = pd.DatetimeIndex(df_price['日期'])
 
     #,,,,,,,,,,,开盘_qfq,收盘_qfq,最高_qfq,最低_qfq
     columns = {"开盘": "open" , "日期": "date", "收盘": "close", "最高": "high", "最低": "low", "开盘_qfq": "open_qfq","收盘_qfq":"close_qfq","最高_qfq": "high_qfq","最低_qfq":"low_qfq",
@@ -283,11 +283,26 @@ df = pd.read_csv(f'data/a/stock/financial/financial_report_{symbol}.csv')
 fix_financial_data(df)
 df = calc_ttm(df, '摊薄每股收益(元)', 'profitTTM')
 
-seasonSet = set(df['iDATE'].unique())
-seasons = sorted(list(seasonSet))
+#seasonSet = set(df['iDATE'].unique())
+#seasons = sorted(list(seasonSet))
+
 df_price = get_stock_price(symbol)
+df_price['season'] = df_price['date'].apply(get_season_iDATE)
 
-df_price['profitTTM'] = df.loc[df['iDATE'] == get_season_iDATE(df_price['日期'].item()), 'profitTTM']
+#df_price.drop(df_price[df_price['season'] < 20150101].index, inplace=True)
+#df_price.drop(df_price[df_price['season'] > 20180101].index, inplace=True)
+df_price.reset_index(drop=True, inplace=True)
 
+num_rows_before = df_price.shape[0]
 
+merged_df = pd.merge(df_price, df, left_on='season', right_on='iDATE', how='left')
+merged_df.fillna({'profitTTM': 0}, inplace=True)
+num_rows_after=merged_df.shape[0]
+
+print(f"{num_rows_before}  =>  {num_rows_after}")
+df_price['profitTTM'] = merged_df['profitTTM']
+
+#df_price.dropna(subset=['profitTTM'], inplace=True)
+
+print(df_price[df_price['season'] == 20170331])
 # print(df.loc[:, ['iDATE', 'profitTTM', '每股净资产_调整后(元)']]),
