@@ -222,7 +222,6 @@ def calc_ttm(df, NameProfit, TTMName):
     df.dropna(subset=[NameProfit], inplace=True)
 
     if not 'iDATE' in df.columns:
-        print("=============")
         df['DATE'] = df['日期'].str.replace('-', '')
         df['iDATE'] = pd.to_numeric(df['DATE'], errors='coerce')
         df.drop(df[df['iDATE'] < 20110101].index, inplace=True)
@@ -244,8 +243,6 @@ def calc_ttm(df, NameProfit, TTMName):
         else:
             df.loc[df['iDATE']==season, TTMName] = '--'
 
-
-    df.drop(df[df['profitTTM'] == '--'].index, inplace=True)
     return df
 
 
@@ -288,7 +285,7 @@ def calc_pepb_by_season(group):
     else:
         group.loc[:, 'PE'] = 0
 
-    if group.loc[group.index[0], 'netassetTTM'] != 0:
+    if group.loc[group.index[0], 'netassetTTM'].item() != 0:
         group.loc[group.index[0], 'PB'] = group.loc[group.index[0], 'close_org'] / group.loc[group.index[0], 'netassetTTM']
         group.loc[group.index[1:], 'PB'] = (group.loc[group.index[1:], 'close_org'] / group.loc[group.index[0], 'close_org']) * group.loc[group.index[0], 'PB']
     else:
@@ -309,7 +306,7 @@ def update_price_pe(df_price, df_financial):
 
     df_price['netassetTTM'] = merged_df['netassetTTM']
     df_price['PB'] = 0
-    # df_price = df_price.groupby('season', group_keys=False).apply(calc_pepb_by_season)
+    df_price = df_price.groupby('season', group_keys=False).apply(calc_pepb_by_season)
 
 
     return df_price
@@ -319,11 +316,21 @@ def update_price_pe(df_price, df_financial):
 def get_full_price(symbol):  
     # step 1. 读取financial 数据，需要用到其中的 每股利润 和 每股净资产，用来计算pe和pb
     df_financial = pd.read_csv(f'data/a/stock/financial/financial_report_{symbol}.csv')
+
+
+
     fix_financial_data(df_financial)
+    print("----1-----")
+    print(df_financial.loc[df_financial['iDATE'] == 20110331, '每股净资产_调整后(元)'])
+    print("----2-----")
     df_financial = calc_ttm(df_financial, '摊薄每股收益(元)', 'profitTTM')
     df_financial = calc_ttm(df_financial, '每股净资产_调整后(元)', 'netassetTTM')
 
-    print(df_financial)
+    df_financial.drop(df_financial[df_financial['profitTTM'] == '--'].index, inplace=True)
+    # print(df_financial.loc[df_financial['iDATE'] == 20120331, '每股净资产_调整后(元)'])  
+    
+    # print(df_financial.loc[df_financial['netassetTTM'] == '--'])
+
 
     # step 2. 读取price 数据
     df_price = get_stock_price(symbol)
