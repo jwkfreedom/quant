@@ -281,13 +281,18 @@ def fix_financial_data(df):
     df.drop(df[df['iDATE'] < 20110101].index, inplace=True)
     return
 
-def calc_pe_by_season(group):
+def calc_pepb_by_season(group):
     if group.loc[group.index[0], 'profitTTM'].item() != 0:
         group.loc[group.index[0], 'PE'] = group.loc[group.index[0], 'close_org'] / group.loc[group.index[0], 'profitTTM']
         group.loc[group.index[1:], 'PE'] = (group.loc[group.index[1:], 'close_org'] / group.loc[group.index[0], 'close_org']) * group.loc[group.index[0], 'PE']
     else:
         group.loc[:, 'PE'] = 0
-        print(f"{group.loc[group.index[0], 'PE'].item()} == {group.loc[group.index[5], 'PE'].item()} == {group.loc[group.index[0], 'season'].item()}")
+
+    if group.loc[group.index[0], 'netassetTTM'] != 0:
+        group.loc[group.index[0], 'PB'] = group.loc[group.index[0], 'close_org'] / group.loc[group.index[0], 'netassetTTM']
+        group.loc[group.index[1:], 'PB'] = (group.loc[group.index[1:], 'close_org'] / group.loc[group.index[0], 'close_org']) * group.loc[group.index[0], 'PB']
+    else:
+        group.loc[:, 'PB'] = 0
  
     return group
 
@@ -295,17 +300,17 @@ def calc_pe_by_season(group):
 
 
 def update_price_pe(df_price, df_financial):
-    df_price['season'] = df_price['date'].apply(get_season_iDATE)
-
-    df_price.reset_index(drop=True, inplace=True)
-
     merged_df = pd.merge(df_price, df_financial, left_on='season', right_on='iDATE', how='left')
     merged_df.fillna({'profitTTM': 0}, inplace=True)
+    merged_df.fillna({'netassetTTM': 0}, inplace=True)
 
     df_price['profitTTM'] = merged_df['profitTTM']
-    #-----------------------------------------------
     df_price['PE'] = 0
-    df_price = df_price.groupby('season', group_keys=False).apply(calc_pe_by_season)
+
+    df_price['netassetTTM'] = merged_df['netassetTTM']
+    df_price['PB'] = 0
+    # df_price = df_price.groupby('season', group_keys=False).apply(calc_pepb_by_season)
+
 
     return df_price
 
@@ -316,9 +321,16 @@ def get_full_price(symbol):
     df_financial = pd.read_csv(f'data/a/stock/financial/financial_report_{symbol}.csv')
     fix_financial_data(df_financial)
     df_financial = calc_ttm(df_financial, '摊薄每股收益(元)', 'profitTTM')
+    df_financial = calc_ttm(df_financial, '每股净资产_调整后(元)', 'netassetTTM')
+
+    print(df_financial)
 
     # step 2. 读取price 数据
     df_price = get_stock_price(symbol)
+
+    # step 2.1 需要按照季度处理数据
+    df_price['season'] = df_price['date'].apply(get_season_iDATE)
+    df_price.reset_index(drop=True, inplace=True)
 
     # step 3. 更新pe
     df_price = update_price_pe(df_price, df_financial)
