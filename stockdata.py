@@ -191,6 +191,10 @@ def get_stock_price(symbol):
     for price_column in price_columns:
         df_price[price_column] = df_price[f"{price_column}_qfq"]
 
+
+    df_price['DATE'] = df_price['date'].str.replace('-', '')
+    df_price['iDATE'] = pd.to_numeric(df_price['DATE'], errors='coerce')
+    df_price = df_price.drop('DATE', axis=1)
     return df_price
 
 
@@ -208,6 +212,7 @@ def get_stock_price(symbol):
 
 
 #
+# 计算financial数据中的TTM值
 # df = calc_ttm(df, '摊薄每股收益(元)', 'profitTTM')
 # df = calc_ttm(df, '每股净资产_调整后(元)', 'netassetTTM')
 #
@@ -245,6 +250,7 @@ def calc_ttm(df, NameProfit, TTMName):
 
 
 #
+# financial_report_XXXX 数据完善
 # 每股净资产_调整后(元) 数据有缺陷，需要用 每股净资产_调整前(元) 来计算调整
 #
 def fix_financial_data(df):
@@ -275,34 +281,54 @@ def fix_financial_data(df):
     df.drop(df[df['iDATE'] < 20110101].index, inplace=True)
     return
 
-def get_value_by_season(df, season, column):
-    return
+def calc_pe_by_season(group):
+    if group.loc[group.index[0], 'profitTTM'].item() != 0:
+        group.loc[group.index[0], 'PE'] = group.loc[group.index[0], 'close_org'] / group.loc[group.index[0], 'profitTTM']
+        group.loc[group.index[1:], 'PE'] = (group.loc[group.index[1:], 'close_org'] / group.loc[group.index[0], 'close_org']) * group.loc[group.index[0], 'PE']
+    else:
+        group.loc[:, 'PE'] = 0
+        print(f"{group.loc[group.index[0], 'PE'].item()} == {group.loc[group.index[5], 'PE'].item()} == {group.loc[group.index[0], 'season'].item()}")
+ 
+    return group
 
+
+
+
+def update_price_pe(df_price, df_financial):
+    df_price['season'] = df_price['date'].apply(get_season_iDATE)
+
+    df_price.reset_index(drop=True, inplace=True)
+
+    merged_df = pd.merge(df_price, df_financial, left_on='season', right_on='iDATE', how='left')
+    merged_df.fillna({'profitTTM': 0}, inplace=True)
+
+    df_price['profitTTM'] = merged_df['profitTTM']
+    #-----------------------------------------------
+    df_price['PE'] = 0
+    df_price = df_price.groupby('season', group_keys=False).apply(calc_pe_by_season)
+
+    return df_price
+
+
+
+def get_full_price(symbol):  
+    # step 1. 读取financial 数据，需要用到其中的 每股利润 和 每股净资产，用来计算pe和pb
+    df_financial = pd.read_csv(f'data/a/stock/financial/financial_report_{symbol}.csv')
+    fix_financial_data(df_financial)
+    df_financial = calc_ttm(df_financial, '摊薄每股收益(元)', 'profitTTM')
+
+    # step 2. 读取price 数据
+    df_price = get_stock_price(symbol)
+
+    # step 3. 更新pe
+    df_price = update_price_pe(df_price, df_financial)
+    return df_price
+
+#-----------------------------------------------
 symbol = '000001'
-df = pd.read_csv(f'data/a/stock/financial/financial_report_{symbol}.csv')
-fix_financial_data(df)
-df = calc_ttm(df, '摊薄每股收益(元)', 'profitTTM')
+df_price = get_full_price(symbol)
 
-#seasonSet = set(df['iDATE'].unique())
-#seasons = sorted(list(seasonSet))
 
-df_price = get_stock_price(symbol)
-df_price['season'] = df_price['date'].apply(get_season_iDATE)
 
-#df_price.drop(df_price[df_price['season'] < 20150101].index, inplace=True)
-#df_price.drop(df_price[df_price['season'] > 20180101].index, inplace=True)
-df_price.reset_index(drop=True, inplace=True)
-
-num_rows_before = df_price.shape[0]
-
-merged_df = pd.merge(df_price, df, left_on='season', right_on='iDATE', how='left')
-merged_df.fillna({'profitTTM': 0}, inplace=True)
-num_rows_after=merged_df.shape[0]
-
-print(f"{num_rows_before}  =>  {num_rows_after}")
-df_price['profitTTM'] = merged_df['profitTTM']
-
-#df_price.dropna(subset=['profitTTM'], inplace=True)
-
-print(df_price[df_price['season'] == 20170331])
+print(df_price[df_price['season'] == 20200331])
 # print(df.loc[:, ['iDATE', 'profitTTM', '每股净资产_调整后(元)']]),
