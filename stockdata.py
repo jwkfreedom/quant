@@ -339,15 +339,15 @@ def get_full_price(symbol):
     df_price['season'] = df_price['date'].apply(get_season_iDATE)
     df_price.reset_index(drop=True, inplace=True)
 
-    # step 3. 更新pe
+    # step 3. 更新pepb
     df_price = update_price_pe(df_price, df_financial)
     return df_price
 
 #-----------------------------------------------
-symbol = '000001'
+symbol = '000002'
 df_price = get_full_price(symbol)
 
 
 
-print(df_price[df_price['season'] == 20200331])
+print(df_price[df_price['season'] == 20210630])
 # print(df.loc[:, ['iDATE', 'profitTTM', '每股净资产_调整后(元)']]),
