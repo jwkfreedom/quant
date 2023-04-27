@@ -8,15 +8,17 @@ etf_list = ["515050",	"512480",	"159867",	"512980",	"159992",	"515400",	"159611"
 
 def download_daily():
     dfs = []
+    columns = {"开盘": "open" , "日期": "date", "收盘": "close", "最高": "high", "最低": "low", "成交量": "volumn", "成交额": "turnover", "振幅":"amp", "涨跌幅": "percent_change", "涨跌额": "value_change", "换手率":"turnover_rate"}
     for symbol in etf_list:
         df = ak.fund_etf_hist_em(symbol, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
-        df.to_csv(f"data/a/etf/price/etf_{symbol}.csv",index=False, encoding='utf_8_sig')
+        df.rename(columns=columns, inplace=True)
+        df.to_csv(f"data/a/etf/price/etf_{symbol}.csv", index=False)
 
         df['name'] = symbol
         dfs.append(df)
         print(f"download etf_{symbol} ok")
-    dftotal = pd.concat(dfs, ignore_index=False)
-    dftotal.to_csv('data/a/etf/etf_all.csv', index=False, encoding='utf_8_sig')
+    #dftotal = pd.concat(dfs, ignore_index=False)
+    #dftotal.to_csv('data/a/etf/etf_all.csv', index=False, encoding='utf_8_sig')
 
 download_daily()
 
