@@ -1,19 +1,28 @@
-import download as dl
+import utils.download as dl
 import stockdata as sd
 import pandas as pd
-import osutil as osutil
+import utils.osutil as osutil
 
+"""
+    下载股票的基本面数据
+"""
 def download_a_jibenmian():
-    # 下载2022年4季度
-    dl.jibenmian_all_fast('xjll', 2022, 2023, ["{year}1231"])
-    dl.jibenmian_all_fast('zcfz', 2022, 2023, ["{year}1231"])
-    dl.jibenmian_all_fast('lrb', 2022, 2023, ["{year}1231"])
+    # 下载2023年1季度
+    dl.jibenmian_all_fast('xjll', 2023, 2024, ["{year}0630"])
+    dl.jibenmian_all_fast('zcfz', 2023, 2024, ["{year}0630"])
+    dl.jibenmian_all_fast('lrb', 2023, 2024, ["{year}0630"])
 
-    # 下载2022年所有数据
     """
+    sample
+    # 下载2022年所有数据
     dl.jibenmian_all_fast('xjll', 2022, 2023)
     dl.jibenmian_all_fast('zcfz', 2022, 2023)
     dl.jibenmian_all_fast('lrb', 2022, 2023)
+
+    # 下载2023年1季度
+    dl.jibenmian_all_fast('xjll', 2023, 2024, ["{year}0331"])
+    dl.jibenmian_all_fast('zcfz', 2023, 2024, ["{year}0331"])
+    dl.jibenmian_all_fast('lrb', 2023, 2024, ["{year}0331"])
     """
 
 
@@ -39,5 +48,5 @@ def download_a_price_cur():
 
 
 # download_a_jibenmian()
-# calc_a_growth(2021, 'data/202101-202204.csv')
-# download_a_price_yearly()
+# calc_a_growth(2021, 'data/202101-lastseason.csv')
+download_a_price_yearly()
