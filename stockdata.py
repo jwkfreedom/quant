@@ -47,8 +47,10 @@ def load_jibenmian(season_start, beforedays=90):
     seasons = get_seasondate(season_start, beforedays)
     src_dir = 'data/a/jibenmian'
 
+
     dfs = []
     for season in seasons:
+        print(f"season={season}")
         df_zcfz = pd.read_csv(f'{src_dir}/zcfz_{season}.csv')
         df_lrb = pd.read_csv(f'{src_dir}/lrb_{season}.csv')
         df_xjll = pd.read_csv(f'{src_dir}/xjll_{season}.csv')

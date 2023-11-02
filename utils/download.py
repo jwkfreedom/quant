@@ -13,6 +13,31 @@ import time
 import os
 import datetime
 
+DATA_PATH="../data"
+
+
+
+
+
+#
+# 下载etf的日成交数据 
+#
+def download_etf(start_date = "20180101", end_date = "20230201"):
+    etf_list = ["515050",	"512480",	"159867",	"512980",	"159992",	"515400",	"159611",	"159997",	"512200",	"515210",	"159638",	"515790",	"512670",	"510880",	"159870",	"518880",	"159937",	"518800",	"516950",	"159998",	"159996",	"159745",	"510230",	"512690",	"512660",	"588200",	"588100",	"515000",	"516050",	"159840",	"159766",	"515220",	"159825",	"516110",	"512000",	"159819",	"515230",	"515710",	"515170",	"560800",	"561190",	"159790",	"516150",	"159928",	"159995",	"516160",	"515030",	"159939",	"512330",	"159959",	"159865",	"512170",	"159883",	"512010",	"562860",	"512800",	"159736",	"159869",	"512400",	"516510",	"515250",	"513050",	"560080"]
+
+    dfs = []
+    columns = {"开盘": "open" , "日期": "date", "收盘": "close", "最高": "high", "最低": "low", "成交量": "volumn", "成交额": "turnover", "振幅":"amp", "涨跌幅": "percent_change", "涨跌额": "value_change", "换手率":"turnover_rate"}
+    for symbol in etf_list:
+        df = ak.fund_etf_hist_em(symbol, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
+        df.rename(columns=columns, inplace=True)
+        df.to_csv(f"{DATA_PATH}/a/etf/price/etf_{symbol}.csv", index=False)
+
+        df['name'] = symbol
+        dfs.append(df)
+        print(f"download etf_{symbol} ok")
+    #dftotal = pd.concat(dfs, ignore_index=False)
+    #dftotal.to_csv(f'{DATA_PATH}/a/etf/etf_all.csv', index=False, encoding='utf_8_sig')
+
 
 # ----- 下载所有A股股票基本面概要数据数据（业绩快报） ------
 # 资产负债表    'zcfz': ak.stock_zcfz_em
@@ -25,7 +50,7 @@ import datetime
 #       season = ["{year}0331", "{year}0630", "{year}0930", "{year}1231"] 数组中的一个或几个
 def jibenmian_all_fast(type, yStart, yEnd, season=["{year}0331", "{year}0630", "{year}0930", "{year}1231"]):
     funcMap = {'zcfz': ak.stock_zcfz_em, 'lrb': ak.stock_lrb_em, 'xjll' : ak.stock_xjll_em}
-    dest = "data/a/jibenmian/{}_{}.csv"   # 输出文件位置
+    dest = DATA_PATH + "/a/jibenmian/{}_{}.csv"   # 输出文件位置
 
     if not type in funcMap :
         print("error type:" + type)
@@ -78,7 +103,7 @@ def stock_jibenmian(symbol, delay, jbm_type=None):
                #{'type':'lrb_report', 'func' : ak.stock_profit_sheet_by_report_em, platform: 'eastmoney'},
                #{'type':'xjll_report', 'func': ak.stock_cash_flow_sheet_by_report_em, platform: 'eastmoney'},
                {'type': 'financial_report', 'func': ak.stock_financial_analysis_indicator, 'platform': 'sina'}]
-    dest = 'data/a/stock/{}/{}_{}.csv'    # data/a/SHXXX/lrb_report_SHXXXXXX.csv
+    dest = DATA_PATH + '/a/stock/{}/{}_{}.csv'    # data/a/SHXXX/lrb_report_SHXXXXXX.csv
     for funcItem in funcList:
         type = funcItem['type']
         func = funcItem['func']
@@ -109,8 +134,8 @@ def stock_price(symbol, down_preyear=False):
     thisyear = int(datetime.datetime.now().strftime("%Y"))
     preyear = thisyear - 1
 
-    file_pre = f"data/a/stock/price/price_{symbol}_pre.csv"   # 2022年(含)以前的数据
-    file_cur = f"data/a/stock/price/price_{symbol}_cur.csv"     # 2023年~当前的数据
+    file_pre = f"{DATA_PATH}/a/stock/price/price_{symbol}_pre.csv"   # 2022年(含)以前的数据
+    file_cur = f"{DATA_PATH}/a/stock/price/price_{symbol}_cur.csv"     # 2023年~当前的数据
     p_symbol = PlatformSymbol(symbol)
 
     if not os.path.exists(file_pre):
@@ -156,7 +181,7 @@ def copy_qfq_data(dfqfq, df):
 # 获取所有 A股股票Id
 # 返回: [600332, 2278...] 格式
 def all_a_stocks():
-    full_stock_file = 'data/a/jibenmian/zcfz_20220930.csv'    # 注意！！只会拉取这个文件中的 股票列表 中的股票。所以一般选取距拉取时间半年前的 资产负债表 的数据
+    full_stock_file = f'{DATA_PATH}/a/jibenmian/zcfz_20220930.csv'    # 注意！！只会拉取这个文件中的 股票列表 中的股票。所以一般选取距拉取时间半年前的 资产负债表 的数据
     df = pd.read_csv(full_stock_file)
     stockIds = map(PlatformSymbol, df['股票代码']) # df['股票代码']
     return stockIds
@@ -196,3 +221,4 @@ def PlatformSymbol(stockId, platform="") :
 # jibenmian_all_fast('xjll', 2022, 2023, ["{year}1231"])
 # jibenmian_all_fast('zcfz', 2022, 2023, ["{year}1231"])
 # jibenmian_all_fast('lrb', 2022, 2023, ["{year}1231"])
+download_etf()
