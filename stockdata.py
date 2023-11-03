@@ -314,12 +314,12 @@ def update_price_pe(df_price, df_financial):
     return df_price
 
 
-
+#
+# 读取一个股票的完整数据
+#
 def get_full_price(symbol):  
     # step 1. 读取financial 数据，需要用到其中的 每股利润 和 每股净资产，用来计算pe和pb
     df_financial = pd.read_csv(f'data/a/stock/financial/financial_report_{symbol}.csv')
-
-
 
     fix_financial_data(df_financial)
     print("----1-----")
@@ -346,10 +346,8 @@ def get_full_price(symbol):
     return df_price
 
 #-----------------------------------------------
+"""
 symbol = '000002'
 df_price = get_full_price(symbol)
-
-
-
 print(df_price[df_price['season'] == 20210630])
-# print(df.loc[:, ['iDATE', 'profitTTM', '每股净资产_调整后(元)']]),
+"""

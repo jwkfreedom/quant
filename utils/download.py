@@ -13,7 +13,7 @@ import time
 import os
 import datetime
 
-DATA_PATH="../data"
+DATA_PATH="data"
 
 
 
@@ -221,4 +221,4 @@ def PlatformSymbol(stockId, platform="") :
 # jibenmian_all_fast('xjll', 2022, 2023, ["{year}1231"])
 # jibenmian_all_fast('zcfz', 2022, 2023, ["{year}1231"])
 # jibenmian_all_fast('lrb', 2022, 2023, ["{year}1231"])
-download_etf()
+# download_etf()

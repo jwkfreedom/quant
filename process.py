@@ -25,8 +25,9 @@ def download_a_jibenmian():
     dl.jibenmian_all_fast('lrb', 2023, 2024, ["{year}0331"])
     """
 
-
+#
 # startYear : 格式: 数字，例如2021
+#
 def calc_a_growth(startYear, file):
     startDate = str(startYear) + "-01-01"
     print(f"开始计算增长数据...(开始季度: {startYear}一季度)")
@@ -48,5 +49,5 @@ def download_a_price_cur():
 
 
 # download_a_jibenmian()
-# calc_a_growth(2021, 'data/202101-lastseason.csv')
-download_a_price_yearly()
+calc_a_growth(2021, 'data/202101-lastseason.csv')
+# download_a_price_yearly()
