@@ -39,6 +39,7 @@
 
 
 ## 数据下载
+- 根据download.py 中的 all_a_stocks() 函数来确定所有股票的id
 ### process.py
     - download_a_jibenmian: 下载A股基本面数据
     - calc_a_growth: 计算基本面增长数据，导出到指定文件

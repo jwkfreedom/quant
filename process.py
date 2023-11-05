@@ -8,9 +8,9 @@ import utils.osutil as osutil
 """
 def download_a_jibenmian():
     # 下载2023年1季度
-    dl.jibenmian_all_fast('xjll', 2023, 2024, ["{year}0630"])
-    dl.jibenmian_all_fast('zcfz', 2023, 2024, ["{year}0630"])
-    dl.jibenmian_all_fast('lrb', 2023, 2024, ["{year}0630"])
+    dl.jibenmian_all_fast('xjll', 2023, 2024, ["{year}0331"])
+    dl.jibenmian_all_fast('zcfz', 2023, 2024, ["{year}0331"])
+    dl.jibenmian_all_fast('lrb', 2023, 2024, ["{year}0331"])
 
     """
     sample
@@ -51,3 +51,4 @@ def download_a_price_cur():
 # download_a_jibenmian()
 calc_a_growth(2021, 'data/202101-lastseason.csv')
 # download_a_price_yearly()
+# download_a_price_cur()

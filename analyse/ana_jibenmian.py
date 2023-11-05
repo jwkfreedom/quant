@@ -12,10 +12,19 @@
 """
 import pandas as pd
 import numpy as np
+import sys
+sys.path.append("..") 
 import stockdata as sd
 
 DATA_ROOT='d:/github/quant/data'
 
 def ana_XXX() :
-    df = pd.read_csv(f'{DATA_ROOT}/202101-202204.csv')
+    df = pd.read_csv(f'{DATA_ROOT}/202101-lastseason.csv')
 
+    print(df)
+
+
+
+
+
+ana_XXX()
