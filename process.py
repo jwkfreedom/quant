@@ -2,6 +2,7 @@ import utils.download as dl
 import stockdata as sd
 import pandas as pd
 import utils.osutil as osutil
+from config import DATA_DIR
 
 """
     下载股票的基本面数据
@@ -49,6 +50,6 @@ def download_a_price_cur():
 
 
 # download_a_jibenmian()
-calc_a_growth(2021, 'data/202101-lastseason.csv')
+calc_a_growth(2021, f'{DATA_DIR}/202101-lastseason.csv')
 # download_a_price_yearly()
 # download_a_price_cur()

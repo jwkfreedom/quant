@@ -2,13 +2,13 @@ import pandas as pd
 import numpy as np
 import talib 
 import stockdata as sd
-
+from ..config import DATA_DIR
 
 
 
 # 读入financial 数据，
 def get_financail_data(symbol):
-    file_src=f"data/a/stock/financial/financial_report_{symbol}.csv"
+    file_src=f"{DATA_DIR}/a/stock/financial/financial_report_{symbol}.csv"
     df_org = pd.read_csv(file_src)
     df = pd.DataFrame()
     df['date'] = df_org['日期']

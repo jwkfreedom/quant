@@ -12,8 +12,7 @@ import pandas as pd
 import time
 import os
 import datetime
-
-DATA_PATH="data"
+from ..config import DATA_DIR
 
 
 
@@ -30,7 +29,7 @@ def download_etf(start_date = "20180101", end_date = "20230201"):
     for symbol in etf_list:
         df = ak.fund_etf_hist_em(symbol, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
         df.rename(columns=columns, inplace=True)
-        df.to_csv(f"{DATA_PATH}/a/etf/price/etf_{symbol}.csv", index=False)
+        df.to_csv(f"{DATA_DIR}/a/etf/price/etf_{symbol}.csv", index=False)
 
         df['name'] = symbol
         dfs.append(df)
@@ -50,7 +49,7 @@ def download_etf(start_date = "20180101", end_date = "20230201"):
 #       season = ["{year}0331", "{year}0630", "{year}0930", "{year}1231"] 数组中的一个或几个
 def jibenmian_all_fast(type, yStart, yEnd, season=["{year}0331", "{year}0630", "{year}0930", "{year}1231"]):
     funcMap = {'zcfz': ak.stock_zcfz_em, 'lrb': ak.stock_lrb_em, 'xjll' : ak.stock_xjll_em}
-    dest = DATA_PATH + "/a/jibenmian/{}_{}.csv"   # 输出文件位置
+    dest = DATA_DIR + "/a/jibenmian/{}_{}.csv"   # 输出文件位置
 
     if not type in funcMap :
         print("error type:" + type)
@@ -103,7 +102,7 @@ def stock_jibenmian(symbol, delay, jbm_type=None):
                #{'type':'lrb_report', 'func' : ak.stock_profit_sheet_by_report_em, platform: 'eastmoney'},
                #{'type':'xjll_report', 'func': ak.stock_cash_flow_sheet_by_report_em, platform: 'eastmoney'},
                {'type': 'financial_report', 'func': ak.stock_financial_analysis_indicator, 'platform': 'sina'}]
-    dest = DATA_PATH + '/a/stock/{}/{}_{}.csv'    # data/a/SHXXX/lrb_report_SHXXXXXX.csv
+    dest = DATA_DIR + '/a/stock/{}/{}_{}.csv'    # data/a/SHXXX/lrb_report_SHXXXXXX.csv
     for funcItem in funcList:
         type = funcItem['type']
         func = funcItem['func']
@@ -134,8 +133,8 @@ def stock_price(symbol, down_preyear=False):
     thisyear = int(datetime.datetime.now().strftime("%Y"))
     preyear = thisyear - 1
 
-    file_pre = f"{DATA_PATH}/a/stock/price/price_{symbol}_pre.csv"   # 2022年(含)以前的数据
-    file_cur = f"{DATA_PATH}/a/stock/price/price_{symbol}_cur.csv"     # 2023年~当前的数据
+    file_pre = f"{DATA_DIR}/a/stock/price/price_{symbol}_pre.csv"   # 2022年(含)以前的数据
+    file_cur = f"{DATA_DIR}/a/stock/price/price_{symbol}_cur.csv"     # 2023年~当前的数据
     p_symbol = PlatformSymbol(symbol)
 
     if not os.path.exists(file_pre):
@@ -181,7 +180,7 @@ def copy_qfq_data(dfqfq, df):
 # 获取所有 A股股票Id
 # 返回: [600332, 2278...] 格式
 def all_a_stocks():
-    full_stock_file = f'{DATA_PATH}/a/jibenmian/zcfz_20220930.csv'    # 注意！！只会拉取这个文件中的 股票列表 中的股票。所以一般选取距拉取时间半年前的 资产负债表 的数据
+    full_stock_file = f'{DATA_DIR}/a/jibenmian/zcfz_20220930.csv'    # 注意！！只会拉取这个文件中的 股票列表 中的股票。所以一般选取距拉取时间半年前的 资产负债表 的数据
     df = pd.read_csv(full_stock_file)
     stockIds = map(PlatformSymbol, df['股票代码']) # df['股票代码']
     return stockIds

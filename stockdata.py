@@ -9,11 +9,14 @@
 import pandas as pd
 import datetime as dt
 import backtrader as bt
+from config import DATA_DIR
+
 from datetime import datetime
 #  获得 季报日期列表，
 #   input: start_date(格式: '2010-01-04')
 #           beforedays: 截止日期为多少天前
 #   return: 格式: ['20100331', '20100630'....., 最后季报]
+
 def get_seasondate(start_date, beforedays=90): 
     seasonstrs = ['0331', '0630', '0930', '1231']
     startStrs = start_date.split('-')
@@ -45,7 +48,7 @@ def get_seasondate(start_date, beforedays=90):
 """
 def load_jibenmian(season_start, beforedays=90):
     seasons = get_seasondate(season_start, beforedays)
-    src_dir = 'data/a/jibenmian'
+    src_dir = f'{DATA_DIR}/a/jibenmian'
 
 
     dfs = []
@@ -172,7 +175,7 @@ def calc_season_growth(df, stockId, seasons, type):
 #  读取一个股票的日线数据
 #     
 def get_stock_price(symbol):
-    file_src=f"data/a/stock/price/price_{symbol}_"
+    file_src=f"{DATA_DIR}/a/stock/price/price_{symbol}_"
 
     df_price_pre = pd.read_csv(file_src + "pre.csv")
     df_price_cur = pd.read_csv(file_src + "cur.csv")
@@ -319,7 +322,7 @@ def update_price_pe(df_price, df_financial):
 #
 def get_full_price(symbol):  
     # step 1. 读取financial 数据，需要用到其中的 每股利润 和 每股净资产，用来计算pe和pb
-    df_financial = pd.read_csv(f'data/a/stock/financial/financial_report_{symbol}.csv')
+    df_financial = pd.read_csv(f'{DATA_DIR}/a/stock/financial/financial_report_{symbol}.csv')
 
     fix_financial_data(df_financial)
     print("----1-----")
