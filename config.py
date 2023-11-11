@@ -1,1 +1,0 @@
-DATA_DIR='d:/github/quant/data'
