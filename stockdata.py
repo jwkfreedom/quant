@@ -284,17 +284,18 @@ def fix_financial_data(df):
     return
 
 def calc_pepb_by_season(group):
+    # print(group.dtypes)
     if group.loc[group.index[0], 'profitTTM'].item() != 0:
         group.loc[group.index[0], 'PE'] = group.loc[group.index[0], 'close_org'] / group.loc[group.index[0], 'profitTTM']
         group.loc[group.index[1:], 'PE'] = (group.loc[group.index[1:], 'close_org'] / group.loc[group.index[0], 'close_org']) * group.loc[group.index[0], 'PE']
     else:
-        group.loc[:, 'PE'] = 0
+        group.loc[:, 'PE'] = 0.0
 
     if group.loc[group.index[0], 'netassetTTM'].item() != 0:
         group.loc[group.index[0], 'PB'] = group.loc[group.index[0], 'close_org'] / group.loc[group.index[0], 'netassetTTM']
         group.loc[group.index[1:], 'PB'] = (group.loc[group.index[1:], 'close_org'] / group.loc[group.index[0], 'close_org']) * group.loc[group.index[0], 'PB']
     else:
-        group.loc[:, 'PB'] = 0
+        group.loc[:, 'PB'] = 0.0
  
     return group
 
@@ -307,10 +308,10 @@ def update_price_pe(df_price, df_financial):
     merged_df.fillna({'netassetTTM': 0}, inplace=True)
 
     df_price['profitTTM'] = merged_df['profitTTM']
-    df_price['PE'] = 0
+    df_price['PE'] = 0.0
 
     df_price['netassetTTM'] = merged_df['netassetTTM']
-    df_price['PB'] = 0
+    df_price['PB'] = 0.0
     df_price = df_price.groupby('season', group_keys=False).apply(calc_pepb_by_season)
 
 
@@ -325,9 +326,6 @@ def get_full_price(symbol):
     df_financial = pd.read_csv(f'{DATA_DIR}/a/stock/financial/financial_report_{symbol}.csv')
 
     fix_financial_data(df_financial)
-    print("----1-----")
-    print(df_financial.loc[df_financial['iDATE'] == 20110331, '每股净资产_调整后(元)'])
-    print("----2-----")
     df_financial = calc_ttm(df_financial, '摊薄每股收益(元)', 'profitTTM')
     df_financial = calc_ttm(df_financial, '每股净资产_调整后(元)', 'netassetTTM')
 
