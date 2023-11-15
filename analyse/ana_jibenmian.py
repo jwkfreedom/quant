@@ -18,7 +18,6 @@ import matplotlib.pyplot as plt
 sys.path.append("..") 
 import stockdata as sd
 
-DATA_ROOT='d:/github/quant/data'
 
 
 """
@@ -56,6 +55,9 @@ def ana_XXX(stockId) :
     plt.show()
 """
 
+"""
+分析交易量突然增大与价格变动以及后续10个交易日涨跌的关系
+"""
 def ana_YYY(stockId):
     # 读取CSV文件
     df = sd.get_full_price(stockId)
@@ -74,11 +76,27 @@ def ana_YYY(stockId):
 
     # 分析交易量突然增大的点的价格变动和后10个交易日的涨跌
     volume_spike_data = df[df['volume_spike']]
-    print(volume_spike_data[['price_change', 'future_change']].describe())
+    #print(volume_spike_data)
+    #print(volume_spike_data[['price_change', 'future_change']].describe())
 
 
 
-ana_YYY('000001')
+
+    # 绘制收盘价和移动平均线
+    plt.figure(figsize=(12,6))
+    plt.plot(df['close'], label='Close Price')
+
+    # 标记买入点
+    plt.plot(df[df['volume_spike']]['close'], '^', markersize=10, color='r', label='buy signal')
+
+    plt.title('Stock Price with Buy Signals')
+    plt.xlabel('Date')
+    plt.ylabel('Price')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+ana_YYY('688050')
 
 
 

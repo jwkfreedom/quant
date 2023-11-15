@@ -11,8 +11,10 @@ import akshare as ak
 import pandas as pd
 import time
 import os
+import sys
 import datetime
-from ..config import DATA_DIR
+sys.path.append("..") 
+from config import DATA_DIR
 
 
 
@@ -214,7 +216,7 @@ def PlatformSymbol(stockId, platform="") :
 # jibenmian('xjll', 2022, 2023)
 # jibenmian_details()
 # stock_price("600036", True)
-# stock_jibenmian("600111", 0)
+stock_jibenmian("688050", 0)
 
 
 # jibenmian_all_fast('xjll', 2022, 2023, ["{year}1231"])
