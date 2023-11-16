@@ -14,6 +14,7 @@ import pandas as pd
 import numpy as np
 import sys
 import matplotlib.pyplot as plt
+from scipy.signal import argrelextrema
 
 sys.path.append("..") 
 import stockdata as sd
@@ -97,6 +98,25 @@ def ana_YYY(stockId):
     plt.legend()
     plt.grid(True)
     plt.show()
+
+
+def ana_ZZZ(stockId):
+
+    # 假设 'close' 列是收盘价
+    df['date'] = pd.to_datetime(df['date'])  # 确保日期是 datetime 类型
+    df.set_index('date', inplace=True)  # 将日期设为索引
+
+    # 找到波峰和波谷
+    df['min'] = df.iloc[argrelextrema(df.close.values, np.less_equal)[0]]['close']
+    df['max'] = df.iloc[argrelextrema(df.close.values, np.greater_equal)[0]]['close']
+
+
+    plt.figure(figsize=(15,10))
+    plt.plot(df.index, df['close'])
+    plt.plot(df.index, df['min'], marker='o', markersize=5, color='r')
+    plt.plot(df.index, df['max'], marker='o', markersize=5, color='g')
+    plt.show()
+
 
 ana_YYY('688050')
 
