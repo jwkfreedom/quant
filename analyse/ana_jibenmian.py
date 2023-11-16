@@ -63,10 +63,11 @@ def ana_YYY(stockId):
     df = sd.get_full_price(stockId)
 
     # 计算20日交易量平均值
-    df['MA_Volume20'] = df['volumn'].rolling(window=20).mean()
+    #df['MA_Volume20'] = df['volumn'].rolling(window=20).mean()
+    df['volumn_mean_plus_3sigma'] = df['volumn'].rolling(window=20).mean().shift(1) * 3
 
     # 找出交易量突然增大到之前20个交易日的平均交易量的3倍的点
-    df['volume_spike'] = df['volumn'] > 3 * df['MA_Volume20']
+    df['volume_spike'] = df['volumn'] >  df['volumn_mean_plus_3sigma']
 
     # 计算价格变动
     df['price_change'] = df['close'] - df['open']
@@ -76,7 +77,8 @@ def ana_YYY(stockId):
 
     # 分析交易量突然增大的点的价格变动和后10个交易日的涨跌
     volume_spike_data = df[df['volume_spike']]
-    #print(volume_spike_data)
+    pd.set_option('display.max_rows', 1000)
+    print(df)
     #print(volume_spike_data[['price_change', 'future_change']].describe())
 
 

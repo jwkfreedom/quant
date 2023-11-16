@@ -182,7 +182,7 @@ def copy_qfq_data(dfqfq, df):
 # 获取所有 A股股票Id
 # 返回: [600332, 2278...] 格式
 def all_a_stocks():
-    full_stock_file = f'{DATA_DIR}/a/jibenmian/zcfz_20220930.csv'    # 注意！！只会拉取这个文件中的 股票列表 中的股票。所以一般选取距拉取时间半年前的 资产负债表 的数据
+    full_stock_file = f'{DATA_DIR}/a/jibenmian/zcfz_20230930.csv'    # 注意！！只会拉取这个文件中的 股票列表 中的股票。所以一般选取距拉取时间半年前的 资产负债表 的数据
     df = pd.read_csv(full_stock_file)
     stockIds = map(PlatformSymbol, df['股票代码']) # df['股票代码']
     return stockIds
@@ -216,10 +216,12 @@ def PlatformSymbol(stockId, platform="") :
 # jibenmian('xjll', 2022, 2023)
 # jibenmian_details()
 # stock_price("600036", True)
-stock_jibenmian("688050", 0)
+# stock_jibenmian("688050", 0)
 
 
-# jibenmian_all_fast('xjll', 2022, 2023, ["{year}1231"])
-# jibenmian_all_fast('zcfz', 2022, 2023, ["{year}1231"])
-# jibenmian_all_fast('lrb', 2022, 2023, ["{year}1231"])
+# jibenmian_all_fast('xjll', 2023, 2024, ["{year}0930"])
+# jibenmian_all_fast('zcfz', 2023, 2024, ["{year}0930"])
+# jibenmian_all_fast('lrb', 2023, 2024, ["{year}0930"])
 # download_etf()
+
+# jibenmian_all()
