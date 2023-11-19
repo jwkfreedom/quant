@@ -103,10 +103,38 @@ def ana_YYY(stockId):
 #查询股票交易数据中一段时间内（比如一年）股价的多个高位和地位，即波峰和波谷，并且划线看趋势
 #要找到股票价格的波峰和波谷，你可以使用 scipy 库中的 argrelextrema 函数。这个函数可以找到数组中的相对极大值和相对极小值。以下是如何使用这个函数的代码：
 def ana_ZZZ(stockId):
-
-    # 假设 'close' 列是收盘价
+    df = sd.get_full_price(stockId)
     df['date'] = pd.to_datetime(df['date'])  # 确保日期是 datetime 类型
     df.set_index('date', inplace=True)  # 将日期设为索引
+
+    # 假设df是你的DataFrame，'close'是收盘价格
+    data = df['close'].values
+    # 计算价格变化的百分比
+    change = np.diff(data) / data[:-1]
+
+    # 找到极大值和极小值
+    maxima = argrelextrema(change, np.greater)[0]
+    minima = argrelextrema(change, np.less)[0]
+
+    # 找到幅度大于30%的极大值和极小值
+    significant_maxima = maxima[change[maxima] > 0.1]
+    significant_minima = minima[change[minima] < -0.1]
+
+    # 打印日期
+    print("Significant maxima dates:", df.index[significant_maxima + 1])
+    print("Significant minima dates:", df.index[significant_minima + 1])
+
+    # 绘制股票价格
+    plt.plot(data)
+
+    # 绘制极大值
+    plt.plot(significant_maxima, data[significant_maxima + 1], 'ro')
+
+    # 绘制极小值
+    plt.plot(significant_minima, data[significant_minima + 1], 'go')
+
+    plt.show()
+    """
 
     # 找到波峰和波谷
     df['min'] = df.iloc[argrelextrema(df.close.values, np.less_equal)[0]]['close']
@@ -118,9 +146,9 @@ def ana_ZZZ(stockId):
     plt.plot(df.index, df['min'], marker='o', markersize=5, color='r')
     plt.plot(df.index, df['max'], marker='o', markersize=5, color='g')
     plt.show()
+    """
 
-
-ana_YYY('688050')
+ana_ZZZ('688050')
 
 
 

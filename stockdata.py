@@ -344,6 +344,10 @@ def get_full_price(symbol):
 
     # step 3. 更新pepb
     df_price = update_price_pe(df_price, df_financial)
+
+    # step 4. 设置date为index，方便画图
+    df_price['date'] = pd.to_datetime(df_price['date'])  # 确保日期是 datetime 类型
+    df_price.set_index('date', inplace=True)  # 将日期设为索引    
     return df_price
 
 #-----------------------------------------------
