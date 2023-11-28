@@ -130,12 +130,12 @@ def stock_jibenmian(symbol, delay, jbm_type=None):
             print(f"skip: stock={symbol}, type={type}")
 # ------ 下载股票日线数据 ------
 # A股股票日线数据，整合了前复权和未复权数据到一张表里
-# down_2022: 是否下载2022年之前的数据
+# down_preyear: 是否下载2022年之前的数据
 def stock_price(symbol, down_preyear=False):
     thisyear = int(datetime.datetime.now().strftime("%Y"))
     preyear = thisyear - 1
 
-    file_pre = f"{DATA_DIR}/a/stock/price/price_{symbol}_pre.csv"   # 2022年(含)以前的数据
+    file_pre = f"{DATA_DIR}/a/stock/price/price_{symbol}_pre.csv"   # 今年(含)以前的数据
     file_cur = f"{DATA_DIR}/a/stock/price/price_{symbol}_cur.csv"     # 2023年~当前的数据
     p_symbol = PlatformSymbol(symbol)
 
@@ -169,6 +169,8 @@ def stock_price(symbol, down_preyear=False):
             print(f"exec stock_price ok: stock={symbol}, type=cur")
     else:
         print(f"exec stock_price skip: stock={symbol}, type=cur")
+
+  
 
 
 # 把前复权的数据拷贝到没有前复权的数据中
