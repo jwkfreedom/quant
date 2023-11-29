@@ -131,7 +131,8 @@ def stock_jibenmian(symbol, delay, jbm_type=None):
 # ------ 下载股票日线数据 ------
 # A股股票日线数据，整合了前复权和未复权数据到一张表里
 # down_preyear: 是否下载2022年之前的数据
-def stock_price(symbol, down_preyear=False):
+# force : 强制下载
+def stock_price(symbol, down_preyear=False, force=False):
     thisyear = int(datetime.datetime.now().strftime("%Y"))
     preyear = thisyear - 1
 
@@ -157,7 +158,7 @@ def stock_price(symbol, down_preyear=False):
     thisyear_start = f"{thisyear}0101"
     cur_date = datetime.datetime.now().strftime("%Y%m%d")   # YYYYMMDD
 
-    if not os.path.exists(file_cur):
+    if not os.path.exists(file_cur) or force :
         try:
             df_stock_cur = ak.stock_zh_a_hist(symbol=p_symbol, period="daily", start_date=thisyear_start, end_date=cur_date, adjust="")
             df_stock_cur_qfq = ak.stock_zh_a_hist(symbol=p_symbol, period="daily", start_date=thisyear_start, end_date=cur_date, adjust="qfq")

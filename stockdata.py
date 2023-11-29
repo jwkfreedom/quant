@@ -291,7 +291,7 @@ def calc_pepb_by_season(group):
     else:
         group.loc[:, 'PE'] = 0.0
 
-    if group.loc[group.index[0], 'netassetTTM'].item() != 0:
+    if group.loc[group.index[0], 'netassetTTM'] != 0 or group.loc[group.index[0], 'netassetTTM'].item() != 0:
         group.loc[group.index[0], 'PB'] = group.loc[group.index[0], 'close_org'] / group.loc[group.index[0], 'netassetTTM']
         group.loc[group.index[1:], 'PB'] = (group.loc[group.index[1:], 'close_org'] / group.loc[group.index[0], 'close_org']) * group.loc[group.index[0], 'PB']
     else:
@@ -312,6 +312,9 @@ def update_price_pe(df_price, df_financial):
 
     df_price['netassetTTM'] = merged_df['netassetTTM']
     df_price['PB'] = 0.0
+
+    df_price = df_price[pd.to_numeric(df_price['netassetTTM'], errors='coerce').notnull()]
+    print(df_price)
     df_price = df_price.groupby('season', group_keys=False).apply(calc_pepb_by_season)
 
 
