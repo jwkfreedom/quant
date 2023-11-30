@@ -7,26 +7,31 @@ import utils.download as dl
 
 # 交易策略 涨幅大于win_sell  或 跌幅大于 lose_sell 卖出， 最大持股日为5天(第一天为第0天)
 strategy = {'win_sell': 0.03, 'lose_sell' : 0.05, 'max_hold': 5}
-!!! 下一步是根据strategy 统计交易结果
+
 
 def prepareData(df) :
     for index, row in df.iterrows():
         stockId = row['stockId']
-        dl.stock_price(stockId, force=True)
-        dl.stock_jibenmian(stockId, 0)
+        stockIdStr = str(stockId).zfill(6)
+        print(stockIdStr)
+        dl.stock_price(stockIdStr, force=True)
 
-def calcScore(stockId, startdate):
+def doStrategy(stockId, startdate):
     iDATE = int(startdate.replace("/", ""))
-    df = sd.get_full_price(stockId)
+    df = sd.get_stock_price(stockId)
     df = df[df['iDATE'] >= iDATE]
     prices = []
-    for index, row in df.iterrows():
+    print(df)
+    index = 0
+    for _index, row in df.iterrows():
+        print(f"index={index}")
         prices.append(row['close_org'])
+        index += 1
     
     return prices
     
 
 
 df = pd.read_csv('record.csv')
-#prepareData(df)
-print(checkStockPrice('300491', '2023/11/28'))
+# prepareData(df)
+doStrategy('002334', '2023/11/28')

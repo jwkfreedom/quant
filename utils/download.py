@@ -219,7 +219,7 @@ def PlatformSymbol(stockId, platform="") :
 # jibenmian('xjll', 2022, 2023)
 # jibenmian_details()
 # stock_price("600036", True)
-# stock_jibenmian("688050", 0)
+# stock_jibenmian("300165", 0)
 
 
 # jibenmian_all_fast('xjll', 2023, 2024, ["{year}0930"])
