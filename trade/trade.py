@@ -13,7 +13,6 @@ def prepareData(df) :
     for index, row in df.iterrows():
         stockId = row['stockId']
         stockIdStr = str(stockId).zfill(6)
-        print(stockIdStr)
         dl.stock_price(stockIdStr, force=True)
 
 def doStrategy(stockId, startdate):
