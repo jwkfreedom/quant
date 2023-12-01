@@ -26,27 +26,32 @@ import stockdata as sd
 """
 def ana_XXX(stockId) :
     # 读取CSV文件
-    df = sd.get_full_price(stockId)
+    df = sd.get_stock_price(stockId)
+
+    df = df.tail(200)
+
+    df['date'] = pd.to_datetime(df['date'])  # 确保日期是 datetime 类型
+    df.set_index('date', inplace=True)  # 将日期设为索引
 
     # 计算5日移动平均线
-    df['MA5'] = df['close'].rolling(window=5).mean()
+    df['MA5'] = df['close_qfq'].rolling(window=5).mean()
 
     # 计算20日移动平均线
-    df['MA20'] = df['close'].rolling(window=20).mean()
+    df['MA20'] = df['close_qfq'].rolling(window=20).mean()
 
     # 找出5日移动平均线上穿20日移动平均线的点，这些点可能是股票强势上涨的开始
     df['buy_signal'] = (df['MA5'] > df['MA20']) & (df['MA5'].shift(1) < df['MA20'].shift(1))
+    df['sell_signal'] = (df['MA20'] > df['MA5']) & (df['MA20'].shift(1) < df['MA5'].shift(1))
 
-    print(df.dtypes)
-"""
     # 绘制收盘价和移动平均线
     plt.figure(figsize=(12,6))
-    plt.plot(df['close'], label='Close Price')
+    plt.plot(df['close_qfq'], label='Close Price')
     plt.plot(df['MA5'], label='MA5')
     plt.plot(df['MA20'], label='MA20')
 
     # 标记买入点
-    plt.plot(df[df['buy_signal']]['close'], '^', markersize=10, color='r', label='buy signal')
+    plt.plot(df[df['buy_signal']]['close_qfq'], '^', markersize=3, color='r', label='buy signal')
+    plt.plot(df[df['sell_signal']]['close_qfq'], '^', markersize=3, color='b', label='sell signal')
 
     plt.title('Stock Price with Buy Signals')
     plt.xlabel('Date')
@@ -54,14 +59,15 @@ def ana_XXX(stockId) :
     plt.legend()
     plt.grid(True)
     plt.show()
-"""
+
 
 """
 分析交易量突然增大与价格变动以及后续10个交易日涨跌的关系
 """
 def ana_YYY(stockId):
     # 读取CSV文件
-    df = sd.get_full_price(stockId)
+    df = sd.stock_price(stockId)
+
 
     # 计算20日交易量平均值
     #df['MA_Volume20'] = df['volumn'].rolling(window=20).mean()
@@ -148,7 +154,7 @@ def ana_ZZZ(stockId):
     plt.show()
     """
 
-ana_ZZZ('688050')
+ana_XXX('002568')
 
 
 

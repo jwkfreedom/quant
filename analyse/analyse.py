@@ -50,7 +50,7 @@ def ana_stock(data):
 
     return data
 
-
+ana_stock('000001')
 
 #df = get_stock_price('000001')
 #print(df)
