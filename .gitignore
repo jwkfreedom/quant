@@ -133,3 +133,4 @@ dmypy.json
 study/data/secret.py
 data/*
 .vscode
+.qoder
