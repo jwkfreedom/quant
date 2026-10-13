@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant"
+version = "0.1.0"
+description = "A股/美股选股研究与策略回测工具"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "akshare>=1.16",
+    "yfinance>=0.2.36",
+    "requests>=2.31",
+    "pandas>=2.1",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "openpyxl>=3.1",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.1",
+    "TA-Lib>=0.6",
+    "ta>=0.11",
+    "statsmodels>=0.14",
+    "backtrader>=1.9.78",
+    "matplotlib>=3.8",
+    "mplfinance>=0.12.10b0",
+]
+
+[project.optional-dependencies]
+gui = ["wxPython>=4.2"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+quant = "quant.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["quant*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

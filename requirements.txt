@@ -1,0 +1,35 @@
+# quant 项目依赖（锁定版本）
+# 版本与重构前在 Python 3.9 下验证可用的组合保持一致，避免新版语义变化影响
+# 尚未改动的算法代码（例如 pandas 3.0 的写时复制会改变分片赋值行为）。
+# 目标解释器：Python 3.11
+
+# --- 数据采集 ---
+akshare==1.18.63
+yfinance==0.2.36
+requests==2.31.0
+
+# --- 数据处理 ---
+pandas==2.1.4
+numpy==1.26.3
+scipy==1.11.4
+openpyxl==3.1.2
+beautifulsoup4==4.12.2
+lxml==5.1.0
+
+# --- 技术指标 ---
+TA-Lib==0.6.7
+ta==0.11.0
+
+# --- 统计 ---
+statsmodels==0.14.1
+
+# --- 回测与可视化 ---
+backtrader==1.9.78.123
+matplotlib==3.8.2
+mplfinance==0.12.10b0
+
+# --- GUI（阶段 2.4 使用）---
+wxPython==4.2.3
+
+# --- 测试 ---
+pytest==8.0.2

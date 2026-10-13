@@ -134,3 +134,18 @@ study/data/secret.py
 data/*
 .vscode
 .qoder
+.lingma
+
+# ---------------- quant 项目新增 ----------------
+# 自带的 Python 解释器与虚拟环境
+.python/
+.venv/
+
+# 临时目录与缓存
+.tmp/
+requirements.lock.txt
+
+# 构建产物
+.egg-info/
+build/
+dist/
