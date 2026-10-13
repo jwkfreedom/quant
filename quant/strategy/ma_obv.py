@@ -11,11 +11,12 @@ import logging
 import backtrader as bt
 import pandas as pd
 
-from quant.config import DATA_DIR
+from quant.price.loader import get_etf_price
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DATA = DATA_DIR / "a" / "etf" / "price" / "etf_512480.csv"
+#: 默认回测标的（半导体 ETF）
+DEFAULT_ETF = "512480"
 
 
 class MyOBV(bt.Indicator):
@@ -59,14 +60,24 @@ class MAOBVStrategy(bt.Strategy):
 
 
 def run_backtest(
-    csv_path=None,
+    etf_symbol: str = DEFAULT_ETF,
     cash: float = 100000.0,
     commission: float = 0.001,
     plot: bool = False,
 ) -> float:
-    """运行 MA+OBV 回测，返回最终组合市值。"""
-    path = csv_path or DEFAULT_DATA
-    data = pd.read_csv(path, index_col=0, parse_dates=True)
+    """运行 MA+OBV 回测，返回最终组合市值。数据来自 SQLite 的 etf_daily 表。"""
+    df = get_etf_price(etf_symbol)
+    if df.empty:
+        raise FileNotFoundError(
+            f"ETF {etf_symbol} 无数据，请先运行 quant update-etf --symbol {etf_symbol}"
+        )
+
+    data = df.rename(columns={
+        "date": "datetime", "open_qfq": "open", "high_qfq": "high",
+        "low_qfq": "low", "close_qfq": "close",
+    })
+    data["datetime"] = pd.to_datetime(data["datetime"])
+    data = data.set_index("datetime").sort_index()
 
     cerebro = bt.Cerebro()
     cerebro.adddata(bt.feeds.PandasData(dataname=data))
@@ -77,7 +88,7 @@ def run_backtest(
     cerebro.run()
 
     final_value = cerebro.broker.getvalue()
-    logger.info("data      : %s", path)
+    logger.info("etf       : %s", etf_symbol)
     logger.info("final value: %.2f", final_value)
     logger.info("return     : %.2f%%", (final_value / cash - 1) * 100)
 

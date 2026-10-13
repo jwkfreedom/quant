@@ -98,7 +98,7 @@ def run_backtest(stock_id: str = "000002", fromdate: datetime | None = None, plo
         high="high",
         low="low",
         close="close",
-        volume="volumn",
+        volume="volume",
         fromdate=fromdate or datetime(2022, 1, 1),
     )
 

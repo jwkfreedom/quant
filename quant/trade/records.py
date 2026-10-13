@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from quant.data import download_a
+from quant.data import update
 from quant.price.loader import get_stock_price
 
 logger = logging.getLogger(__name__)
@@ -36,11 +36,11 @@ def load_records(path=None) -> pd.DataFrame:
     return pd.read_csv(path or DEFAULT_RECORDS_PATH)
 
 
-def prepare_price_data(df: pd.DataFrame) -> None:
-    """按记录中的股票代码强制刷新日线数据。"""
-    for _index, row in df.iterrows():
-        stock_id = str(row["stockId"]).zfill(6)
-        download_a.stock_price(stock_id, force=True)
+def prepare_price_data(df: pd.DataFrame) -> dict:
+    """按记录中的股票代码补齐/刷新日线数据（写入 SQLite）。"""
+    symbol_column = "symbol" if "symbol" in df.columns else "stockId"
+    symbols = [str(value).zfill(6) for value in df[symbol_column]]
+    return update.update_price(symbols=sorted(set(symbols)), mode="incremental")
 
 
 def collect_closes(stock_id: str, startdate: str) -> list[float]:

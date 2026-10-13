@@ -1,121 +1,120 @@
 """基本面：TTM 计算、财务指标修补、PE/PB 估值。
 
-由原 stockdata.py 等价迁移，算法未改动。
+阶段 2.2 改写要点（原实现在 stockdata.py 中逐行循环 + `.item()`，遇到重复行/缺行会抛异常）：
+    - 全部改为 pandas 向量化，缺数据处返回 NaN 而不是崩溃
+    - 列名统一英文
+    - PE/PB 计算前强制按日期排序并按季度分组，消除「依赖组内行序」的隐患
 """
 
 from __future__ import annotations
 
 import logging
 
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-#: financial_report_XXXXXX.csv 中需要修补的字段
-NAME_PREFIX = "每股净资产_调整前(元)"
-NAME_POSTFIX = "每股净资产_调整后(元)"
 
+def calc_ttm(df: pd.DataFrame, value_column: str, ttm_column: str, *, idate_column: str = "idate") -> pd.DataFrame:
+    """计算 TTM（滚动四季度）值，返回新的 DataFrame。
 
-def calc_ttm(df: pd.DataFrame, name_profit: str, ttm_name: str) -> pd.DataFrame:
-    """计算财务数据中的 TTM 值。
+    公式：TTM(本期) = 去年年报值 - 去年同季值 + 本期累计值
 
-    TTM = 去年年报值 - 去年同季值 + 本季值。
-    若缺少去年同期或去年年报，则该季填 '--'。
+    与旧实现的差异：缺少去年年报或去年同季时结果为 NaN（旧实现写入字符串 '--'）。
     """
-    df[name_profit] = pd.to_numeric(df[name_profit], errors="coerce")
-    df.dropna(subset=[name_profit], inplace=True)
+    df = df.sort_values(idate_column).copy()
+    value = pd.to_numeric(df[value_column], errors="coerce")
+    df[value_column] = value
 
-    if "iDATE" not in df.columns:
-        df["DATE"] = df["日期"].str.replace("-", "")
-        df["iDATE"] = pd.to_numeric(df["DATE"], errors="coerce")
-        df.drop(df[df["iDATE"] < 20110101].index, inplace=True)
+    lookup = pd.Series(value.values, index=df[idate_column].values)
+    lookup = lookup[~lookup.index.duplicated(keep="last")]
 
-    seasons = sorted(set(df["iDATE"].unique()))
+    prev_same = df[idate_column] - 10000
+    prev_year_end = (df[idate_column] // 10000 - 1) * 10000 + 1231
 
-    for season in seasons:
-        preyear_season = df.loc[df["iDATE"] == season, "iDATE"].item() - 10000
-        preyear = int(preyear_season / 10000)
-        preyear_end = preyear * 10000 + 1231
+    prev_same_value = prev_same.map(lookup)
+    prev_year_end_value = prev_year_end.map(lookup)
 
-        season_profit = df.loc[df["iDATE"] == season, name_profit].item()
-        if (not df.loc[df["iDATE"] == preyear_season].empty) and (not df.loc[df["iDATE"] == preyear_end].empty):
-            preyear_season_profit = df.loc[df["iDATE"] == preyear_season, name_profit].item()
-            preyear_end_profit = df.loc[df["iDATE"] == preyear_end, name_profit].item()
-            df.loc[df["iDATE"] == season, ttm_name] = preyear_end_profit - preyear_season_profit + season_profit
-        else:
-            df.loc[df["iDATE"] == season, ttm_name] = "--"
-
+    df[ttm_column] = prev_year_end_value.values - prev_same_value.values + value.values
     return df
 
 
-def fix_financial_data(df: pd.DataFrame) -> None:
-    """修补 financial_report 数据。
+def fix_bvps(df: pd.DataFrame, *, before: str = "bvps_before", after: str = "bvps_after") -> pd.DataFrame:
+    """修补 '每股净资产(调整后)' 缺失值。
 
-    '每股净资产_调整后(元)' 偶有缺失，用 '调整前' 减去上一期的差额推算。
-    原地修改 df，无返回值（保持原行为）。
-
-    TODO(2.2): 改为返回 DataFrame，并处理 item() 的多行/缺行异常。
+    规则：若某期「调整后」缺失，则用「调整前」减去上一期的（调整前 - 调整后）差额。
+    与旧实现等价，但改为向量化（旧的逐季循环靠循环变量 diff 传递状态）。
     """
-    df["DATE"] = df["日期"].str.replace("-", "")
-    df["iDATE"] = pd.to_numeric(df["DATE"], errors="coerce")
+    df = df.sort_values("idate").copy()
+    before_values = pd.to_numeric(df[before], errors="coerce")
+    after_values = pd.to_numeric(df[after], errors="coerce")
 
-    seasons = sorted(set(df["iDATE"].unique()))
-    diff = 0
+    diff = (before_values - after_values)
+    # 上一期已知的差额（向前填充后整体下移一行），首期为 0
+    diff_prev = diff.ffill().shift(1).fillna(0.0)
+    filled = before_values - diff_prev
 
-    df[NAME_PREFIX] = pd.to_numeric(df[NAME_PREFIX], errors="coerce")
-    df[NAME_POSTFIX] = pd.to_numeric(df[NAME_POSTFIX], errors="coerce")
-
-    for season in seasons:
-        season_prefix = df.loc[df["iDATE"] == season, NAME_PREFIX]
-        season_postfix = df.loc[df["iDATE"] == season, NAME_POSTFIX]
-        if pd.isna(season_postfix.item()):
-            value = season_prefix.item() - diff
-            df.loc[df["iDATE"] == season, NAME_POSTFIX] = value
-            logger.info("fix season=%s, value=%s", season, value)
-        else:
-            diff = season_prefix.item() - season_postfix.item()
+    df[before] = before_values
+    df[after] = after_values.where(after_values.notna(), filled)
+    return df
 
 
-def calc_pepb_by_season(group: pd.DataFrame) -> pd.DataFrame:
-    """按季度分组，用季度首个交易日的 close_org 与 TTM 计算 PE/PB，其余交易日按价格比例推算。
+def compute_pe_pb(df_price: pd.DataFrame, df_financial: pd.DataFrame) -> pd.DataFrame:
+    """把 TTM 每股指标并入日线并计算 PE / PB。
 
-    TODO(2.2): 当前依赖组内行序与索引语义，调用前必须保证数据按日期排序且索引已 reset。
+    口径（沿用重构前）：
+        - 每个季度的**首个交易日**：PE = 不复权收盘价 / 每股收益TTM，PB 同理
+        - 该季度其余交易日：按不复权收盘价相对首日的比例线性缩放
+        - 每股收益TTM 为 0 或缺该季度财务数据时，整段 PE = 0
     """
-    first = group.index[0]
+    price = df_price.sort_values("date").copy()
 
-    if group.loc[first, "profitTTM"].item() != 0:
-        group.loc[first, "PE"] = group.loc[first, "close_org"] / group.loc[first, "profitTTM"]
-        group.loc[group.index[1:], "PE"] = (
-            group.loc[group.index[1:], "close_org"] / group.loc[first, "close_org"]
-        ) * group.loc[first, "PE"]
-    else:
-        group.loc[:, "PE"] = 0.0
+    fin = df_financial.loc[:, ["idate", "eps_ttm", "bvps_ttm"]].rename(columns={"idate": "season"})
+    fin = fin.drop_duplicates(subset=["season"], keep="last")
+    price = price.merge(fin, on="season", how="left")
 
-    if group.loc[first, "netassetTTM"] != 0 or group.loc[first, "netassetTTM"].item() != 0:
-        group.loc[first, "PB"] = group.loc[first, "close_org"] / group.loc[first, "netassetTTM"]
-        group.loc[group.index[1:], "PB"] = (
-            group.loc[group.index[1:], "close_org"] / group.loc[first, "close_org"]
-        ) * group.loc[first, "PB"]
-    else:
-        group.loc[:, "PB"] = 0.0
+    price["eps_ttm"] = pd.to_numeric(price["eps_ttm"], errors="coerce")
+    price["bvps_ttm"] = pd.to_numeric(price["bvps_ttm"], errors="coerce")
 
-    return group
+    # 旧实现用副本的 SEASON 顺序取“季度首行”，这里显式按日期取首行
+    is_first = ~price.duplicated(subset=["season"], keep="first")
+    first = price.loc[is_first].set_index("season")
+
+    first_close = first["close_org"]
+    first_eps = first["eps_ttm"].fillna(0.0)
+    first_bvps = first["bvps_ttm"].fillna(0.0)
+
+    pe_base = pd.Series(0.0, index=first.index)
+    valid = first_eps != 0
+    pe_base[valid] = first_close[valid] / first_eps[valid]
+
+    pb_base = pd.Series(0.0, index=first.index)
+    valid = first_bvps != 0
+    pb_base[valid] = first_close[valid] / first_bvps[valid]
+
+    ratio = price["close_org"] / price["season"].map(first_close)
+
+    pe = price["season"].map(pe_base) * ratio
+    pb = price["season"].map(pb_base) * ratio
+
+    # 旧实现：季度首行直接等于基准值（ratio 为 1，结果一致），无财务数据的季度为 0
+    price["PE"] = pe.where(price["season"].map(first_eps).ne(0), 0.0).fillna(0.0).round(10)
+    price["PB"] = pb.where(price["season"].map(first_bvps).ne(0), 0.0).fillna(0.0).round(10)
+
+    return price
 
 
-def update_price_pe(df_price: pd.DataFrame, df_financial: pd.DataFrame) -> pd.DataFrame:
-    """把 TTM 利润/净资产并进日线，再按季度计算 PE/PB。"""
-    merged_df = pd.merge(df_price, df_financial, left_on="season", right_on="iDATE", how="left")
-    merged_df.fillna({"profitTTM": 0}, inplace=True)
-    merged_df.fillna({"netassetTTM": 0}, inplace=True)
+def financial_to_ttm(df_financial: pd.DataFrame) -> pd.DataFrame:
+    """对 financial_indicator 表数据做修补 + TTM，返回带 eps_ttm / bvps_ttm 的 DataFrame。"""
+    if df_financial.empty:
+        return df_financial
 
-    df_price["profitTTM"] = merged_df["profitTTM"]
-    df_price["PE"] = 0.0
+    df = df_financial.sort_values("report_date").copy()
+    df = fix_bvps(df)
+    df = calc_ttm(df, "eps_diluted", "eps_ttm")
+    df = calc_ttm(df, "bvps_after", "bvps_ttm")
 
-    df_price["netassetTTM"] = merged_df["netassetTTM"]
-    df_price["PB"] = 0.0
-
-    df_price = df_price[pd.to_numeric(df_price["netassetTTM"], errors="coerce").notnull()]
-    logger.debug("merged price rows: %d", len(df_price))
-    df_price = df_price.groupby("season", group_keys=False).apply(calc_pepb_by_season)
-
-    return df_price
+    df = df[df["eps_ttm"].notna()]
+    df = df[df["bvps_ttm"].notna()]
+    return df.reset_index(drop=True)

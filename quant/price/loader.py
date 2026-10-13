@@ -1,93 +1,110 @@
 """行情：日线读取与估值（PE/PB）。
 
-由原 stockdata.py 等价迁移，算法未改动。
+阶段 2.2 起数据源由「每只股票两个 CSV」改为 **SQLite**（`data/quant.db`）：
+    - 不再有 pre/cur 文件缺失导致 FileNotFoundError 的问题
+    - 读取结果按日期升序，修掉了旧实现「拼接顺序即行序」的隐患
+
+返回的 DataFrame 列（与重构前兼容）：
+    date, idate
+    open/high/low/close            -> **前复权**（回测默认口径，沿用旧语义）
+    open_qfq/high_qfq/...          -> 前复权（显式名）
+    open_org/high_org/low_org/close_org -> **不复权**（沿用旧语义）
+    volume, turnover, amplitude, pct_change, price_change, turnover_rate
 """
 
 from __future__ import annotations
 
 import logging
+import sqlite3
 
 import pandas as pd
 
-from quant.config import DATA_DIR
-from quant.foundation.financial import calc_ttm, fix_financial_data, update_price_pe
+from quant.data import schema, store
+from quant.foundation.financial import compute_pe_pb, financial_to_ttm
 from quant.foundation.season import get_season_iDATE
 
 logger = logging.getLogger(__name__)
 
-#: 原始中文列名 -> 内部英文列名
-PRICE_COLUMN_MAP: dict[str, str] = {
-    "开盘": "open",
-    "日期": "date",
-    "收盘": "close",
-    "最高": "high",
-    "最低": "low",
-    "开盘_qfq": "open_qfq",
-    "收盘_qfq": "close_qfq",
-    "最高_qfq": "high_qfq",
-    "最低_qfq": "low_qfq",
-    "成交量": "volumn",
-    "成交额": "turnover",
-    "振幅": "amp",
-    "涨跌幅": "percent_change",
-    "涨跌额": "value_change",
-    "换手率": "turnover_rate",
-}
-
-#: 前复权覆盖的四个价格列
-PRICE_COLUMNS: tuple[str, ...] = ("open", "close", "high", "low")
+#: 需要同时给出「前复权 / 不复权」两套的字段
+_OHLC = ("open", "high", "low", "close")
 
 
-def price_file(symbol: str, part: str) -> "Path":
-    """返回某只股票的价格文件路径。part 取 'pre'（今年以前）或 'cur'（今年）。"""
-    return DATA_DIR / "a" / "stock" / "price" / f"price_{symbol}_{part}.csv"
+def _price_frame_from_db(df_db: pd.DataFrame) -> pd.DataFrame:
+    """把数据库行转换为对外的行情 DataFrame。"""
+    if df_db.empty:
+        return pd.DataFrame(columns=list(schema.PRICE_FRAME_COLUMNS))
+
+    df = df_db.copy()
+    # 数据库里 open/close... 是不复权，*_qfq 是前复权
+    for column in _OHLC:
+        df[f"{column}_org"] = df[column]
+        df[column] = df[f"{column}_qfq"]
+
+    return df.loc[:, [c for c in schema.PRICE_FRAME_COLUMNS if c in df.columns]]
 
 
-def get_stock_price(symbol: str) -> pd.DataFrame:
-    """读取一只股票的日线数据（pre + cur 拼接，前复权覆盖未复权）。
+def get_stock_price(
+    symbol: str,
+    start: int | None = None,
+    end: int | None = None,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> pd.DataFrame:
+    """读取一只股票的日线数据（按日期升序）。
 
-    返回列：open/close/high/low（前复权）、*_org（未复权）、volumn、turnover、
-    percent_change、turnover_rate、DATE、iDATE。
+    参数 start/end 为 YYYYMMDD 整数边界，可选。
     """
-    df_price = pd.concat([pd.read_csv(price_file(symbol, "pre")), pd.read_csv(price_file(symbol, "cur"))])
-
-    df_price.rename(columns=PRICE_COLUMN_MAP, inplace=True)
-
-    for column in PRICE_COLUMNS:
-        df_price[f"{column}_org"] = df_price[column]
-
-    for column in PRICE_COLUMNS:
-        df_price[column] = df_price[f"{column}_qfq"]
-
-    df_price["DATE"] = df_price["date"].str.replace("-", "")
-    df_price["iDATE"] = pd.to_numeric(df_price["DATE"], errors="coerce")
-    df_price = df_price.drop("DATE", axis=1)
-    return df_price
+    symbol = str(symbol).zfill(6)
+    if conn is not None:
+        return _price_frame_from_db(store.read_price(conn, symbol, start, end))
+    with store.open_db() as own_conn:
+        return _price_frame_from_db(store.read_price(own_conn, symbol, start, end))
 
 
-def get_full_price(symbol: str) -> pd.DataFrame:
-    """读取一只股票的完整数据：日线 + PE/PB，date 作为索引。
+def get_etf_price(symbol: str, *, conn: sqlite3.Connection | None = None) -> pd.DataFrame:
+    """读取一只 ETF 的日线（ETF 数据本身已是前复权）。"""
+    if conn is not None:
+        return store.read_etf_price(conn, symbol)
+    with store.open_db() as own_conn:
+        return store.read_etf_price(own_conn, symbol)
 
-    步骤：
-        1. 读 financial_report_{symbol}.csv，修补字段并计算 profitTTM / netassetTTM
-        2. 读日线，按季度打 season 标记
-        3. 合并计算 PE / PB
-        4. 把 date 设为索引
-    """
-    df_financial = pd.read_csv(DATA_DIR / "a" / "stock" / "financial" / f"financial_report_{symbol}.csv")
 
-    fix_financial_data(df_financial)
-    df_financial = calc_ttm(df_financial, "摊薄每股收益(元)", "profitTTM")
-    df_financial = calc_ttm(df_financial, "每股净资产_调整后(元)", "netassetTTM")
+def get_financial(symbol: str, *, conn: sqlite3.Connection | None = None) -> pd.DataFrame:
+    """读取一只股票的财务指标（已补 TTM）。"""
+    symbol = str(symbol).zfill(6)
+    if conn is not None:
+        return financial_to_ttm(store.read_financial(conn, symbol))
+    with store.open_db() as own_conn:
+        return financial_to_ttm(store.read_financial(own_conn, symbol))
 
-    df_financial.drop(df_financial[df_financial["profitTTM"] == "--"].index, inplace=True)
 
-    df_price = get_stock_price(symbol)
+def _get_full_price(conn: sqlite3.Connection, symbol: str) -> pd.DataFrame:
+    df_price = get_stock_price(symbol, conn=conn)
+    if df_price.empty:
+        raise FileNotFoundError(
+            f"数据库中没有 {symbol} 的日线数据，请先运行 quant update-price --stock {symbol}"
+        )
+
+    df_financial = get_financial(symbol, conn=conn)
+
+    df_price = df_price.copy()
     df_price["season"] = df_price["date"].apply(get_season_iDATE)
-    df_price.reset_index(drop=True, inplace=True)
 
-    df_price = update_price_pe(df_price, df_financial)
+    if df_financial.empty:
+        logger.warning("%s 没有财务指标数据，PE/PB 置 0", symbol)
+        df_price["PE"] = 0.0
+        df_price["PB"] = 0.0
+    else:
+        df_price = compute_pe_pb(df_price, df_financial)
 
     df_price["date"] = pd.to_datetime(df_price["date"])
-    df_price.set_index("date", inplace=True)
-    return df_price
+    return df_price.set_index("date").sort_index()
+
+
+def get_full_price(symbol: str, *, conn: sqlite3.Connection | None = None) -> pd.DataFrame:
+    """读取一只股票的完整数据：日线 + PE / PB，date 作为索引。"""
+    symbol = str(symbol).zfill(6)
+    if conn is not None:
+        return _get_full_price(conn, symbol)
+    with store.open_db() as own_conn:
+        return _get_full_price(own_conn, symbol)

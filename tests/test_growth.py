@@ -1,58 +1,73 @@
-"""单季增长计算的单测（构造数据，不依赖磁盘）。"""
+"""单季增长计算单测（构造数据，不依赖磁盘）。"""
 
 from __future__ import annotations
 
 import pandas as pd
 import pytest
 
-from quant.foundation.growth import calc_season_growth, growth_score
+from quant.foundation.growth import compute_growth, growth_score, rm_broken_stocks
 
 
 def _sample_df() -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "股票代码": [600000, 600000],
-            "iDATE": [20220331, 20220630],
-            "营业总收入": [100.0, 250.0],
-            "营业总收入同比": [0.0, 25.0],
-        }
-    )
+    return pd.DataFrame({
+        "symbol": ["600000", "600000"],
+        "season": [20220331, 20220630],
+        "total_revenue": [100.0, 250.0],
+        "total_revenue_yoy": [0.0, 25.0],
+        "net_profit": [20.0, 60.0],
+        "net_profit_yoy": [0.0, 50.0],
+    })
 
 
-def test_calc_season_growth_income():
-    df = _sample_df()
-    seasons = [20220331, 20220630]
-    result = calc_season_growth(df, 600000, seasons, "营业总收入")
+def test_compute_growth_income():
+    result = compute_growth(_sample_df())
+    first = result[result["season"] == 20220331].iloc[0]
+    second = result[result["season"] == 20220630].iloc[0]
 
-    first = result[result["iDATE"] == 20220331].iloc[0]
-    second = result[result["iDATE"] == 20220630].iloc[0]
+    # 一季度：单季值即累计值，同比即报表同比
+    assert first["pre_year_income"] == pytest.approx(100.0)
+    assert first["season_income"] == pytest.approx(100.0)
+    assert first["season_income_growth"] == pytest.approx(0.0)
 
-    # 一季度：单季值即累计值，同比即总同比
-    assert first["preYearIncome"] == pytest.approx(100.0)
-    assert first["SeasonIncome"] == pytest.approx(100.0)
-    assert first["SeasonIncomeGrowth"] == pytest.approx(0.0)
+    # 二季度：单季 = 250 - 100 = 150；去年同季 = 200 - 100 = 100；同比 +50%
+    assert second["pre_year_income"] == pytest.approx(200.0)
+    assert second["season_income"] == pytest.approx(150.0)
+    assert second["season_income_growth"] == pytest.approx(50.0)
 
-    # 二季度：单季 = 本期累计 - 上期累计 = 250 - 100 = 150
-    assert second["preYearIncome"] == pytest.approx(250.0 / 1.25)      # 200
-    assert second["SeasonIncome"] == pytest.approx(150.0)
-    # 单季同比 = 150 / (200 - 100) - 1 = 50%
-    assert second["SeasonIncomeGrowth"] == pytest.approx(50.0)
+
+def test_compute_growth_profit():
+    result = compute_growth(_sample_df())
+    second = result[result["season"] == 20220630].iloc[0]
+    # 单季利润 = 60 - 20 = 40；去年同季 = 40 - 20 = 20；同比 +100%
+    assert second["pre_year_profit"] == pytest.approx(40.0)
+    assert second["season_profit"] == pytest.approx(40.0)
+    assert second["season_profit_growth"] == pytest.approx(100.0)
+
+
+def test_compute_growth_handles_missing_previous_season():
+    df = _sample_df().iloc[[1]].copy()  # 只有二季度，缺上一季
+    result = compute_growth(df)
+    assert len(result) == 1
+    assert pd.isna(result.iloc[0]["season_income"])
 
 
 def test_growth_score_requires_q1_start():
-    df = _sample_df().iloc[[1]].copy()  # 只有 20220630
+    df = _sample_df().iloc[[1]].copy()
     assert growth_score(df) is None
 
 
-def test_growth_score_runs_for_both_types():
-    df = _sample_df()
-    df["净利润"] = [20.0, 60.0]
-    df["净利润同比"] = [0.0, 50.0]
-
-    result = growth_score(df)
-
+def test_growth_score_on_valid_input():
+    result = growth_score(_sample_df())
     assert result is not None
-    for column in ("SeasonIncome", "SeasonIncomeGrowth", "SeasonProfit", "SeasonProfitGrowth"):
+    for column in ("pre_year_income", "season_income", "season_income_growth",
+                   "pre_year_profit", "season_profit", "season_profit_growth"):
         assert column in result.columns
-    second = result[result["iDATE"] == 20220630].iloc[0]
-    assert second["SeasonProfit"] == pytest.approx(40.0)
+
+
+def test_rm_broken_stocks_keeps_complete_symbols():
+    df = pd.DataFrame({
+        "symbol": ["A", "A", "B"],
+        "season": [20220331, 20220630, 20220331],
+    })
+    result = rm_broken_stocks(df)
+    assert set(result["symbol"]) == {"A"}

@@ -3,23 +3,9 @@
 from __future__ import annotations
 
 import os
-import shutil
-import tempfile
 from pathlib import Path
 
-import pytest
-
 from quant import config
-
-
-@pytest.fixture
-def temp_dir():
-    """自建临时目录（不使用 pytest 的 tmp_path，避免依赖系统临时目录）。"""
-    path = Path(tempfile.mkdtemp(prefix="quant-test-"))
-    try:
-        yield path
-    finally:
-        shutil.rmtree(path, ignore_errors=True)
 
 
 def test_project_root_contains_package():
@@ -53,9 +39,14 @@ def test_load_env_file_does_not_override_real_env(monkeypatch, temp_dir):
 
 
 def test_load_env_file_missing_is_noop(temp_dir):
-    config.load_env_file(temp_dir / "not-exists.env")  # 不应抛异常
+    config.load_env_file(temp_dir / "not-exists.env")
 
 
 def test_get_log_level_fallback(monkeypatch):
     monkeypatch.setenv("QUANT_LOG_LEVEL", "not-a-level")
     assert config.get_log_level() == 20  # logging.INFO
+
+
+def test_db_path_defaults_under_data_dir(monkeypatch):
+    monkeypatch.delenv("QUANT_DB_PATH", raising=False)
+    assert config._path_env("QUANT_DB_PATH", config.DATA_DIR / "quant.db") == config.DATA_DIR / "quant.db"

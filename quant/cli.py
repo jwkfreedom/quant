@@ -1,23 +1,30 @@
 """quant 统一命令行入口。
 
-用法::
+数据流：取数 -> 归档原始件 -> 摄入 SQLite -> 派生表 -> 查询/回测
 
-    python -m quant info
-    python -m quant check
-    python -m quant download-jibenmian --start-year 2023 --end-year 2024 --season 0331
-    python -m quant calc-growth --from-year 2021 --out data/202101-lastseason.csv
-    python -m quant download-price --mode cur
-    python -m quant download-price --mode yearly
-    python -m quant download-etf --start 20180101 --end 20230201
-    python -m quant download-us
+    quant info                        配置与依赖自检
+    quant check                       数据体检（数据库 + 归档区）
 
-安装为可编辑包后也可直接使用 quant 命令（见 pyproject.toml 的 project.scripts）。
+    quant db-init                     建库建表
+    quant db-migrate                  历史 CSV -> SQLite（可重复执行）
+    quant db-migrate --archive        迁移后把原始 CSV 归档到 data/original/
+    quant db-migrate --cleanup --yes  归档后删除已入库的行情 CSV（不可逆）
+    quant db-stats                    查看各表行数
+
+    quant update-jibenmian            补齐缺失季度并摄入
+    quant update-price                追加最新日线（默认增量）
+    quant update-etf                  追加 ETF 日线
+    quant update-all                  一键按顺序全部更新
+    quant rebuild-growth              重算单季增长表
+
+    quant calc-growth                 导出单季增长 CSV（英文列名）
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib
+import logging
 import sys
 from pathlib import Path
 
@@ -30,23 +37,31 @@ BASE_DEPS = [
 OPTIONAL_DEPS = ["wx"]
 
 
+def _human(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GB"
+
+
 # --------------------------------------------------------------------------
 # info / check
 # --------------------------------------------------------------------------
 def cmd_info(_args: argparse.Namespace) -> int:
     """打印配置与依赖自检结果。"""
     print(f"quant {config.__version__}")
-    print("-" * 60)
+    print("-" * 62)
     for key, value in config.as_dict().items():
         print(f"{key:<14} {value}")
 
-    print("-" * 60)
+    print("-" * 62)
     print("依赖:")
     for name in BASE_DEPS:
         try:
             module = importlib.import_module(name)
-            version = getattr(module, "__version__", "?")
-            print(f"  OK   {name:<12} {version}")
+            print(f"  OK   {name:<12} {getattr(module, '__version__', '?')}")
         except Exception as exc:
             print(f"  FAIL {name:<12} {type(exc).__name__}")
 
@@ -55,128 +70,222 @@ def cmd_info(_args: argparse.Namespace) -> int:
             module = importlib.import_module(name)
             print(f"  OK   {name:<12} {getattr(module, '__version__', '?')} (optional)")
         except Exception:
-            print(f"  MISS {name:<12} (optional, 阶段 2.4 需要)")
+            print(f"  MISS {name:<12} (optional, UI 需要)")
     return 0
 
 
 def cmd_check(_args: argparse.Namespace) -> int:
-    """数据目录体检：文件数量、季度覆盖、缺失的价格文件。"""
-    data_dir = config.DATA_DIR
-    print(f"数据根目录: {data_dir}  {'存在' if data_dir.is_dir() else '不存在!'}")
-    if not data_dir.is_dir():
-        return 1
+    """数据体检：数据库各表行数 + 归档区文件数。"""
+    from quant.config import DATA_DIR, DB_PATH, ORIGINAL_DIR
+    from quant.data import schema, store
 
-    jbm_dir = data_dir / "a" / "jibenmian"
-    print("-" * 60)
-    print("基本面 (data/a/jibenmian):")
-    for table in ("zcfz", "lrb", "xjll"):
-        files = sorted(jbm_dir.glob(f"{table}_*.csv")) if jbm_dir.is_dir() else []
-        if files:
-            seasons = [f.stem.split("_")[1] for f in files]
-            print(f"  {table}: {len(files)} 个文件, {seasons[0]} ~ {seasons[-1]}")
-        else:
-            print(f"  {table}: 无数据")
+    print(f"数据根目录: {DATA_DIR}  {'存在' if DATA_DIR.is_dir() else '不存在!'}")
+    print(f"数据库    : {DB_PATH}  {'存在' if DB_PATH.is_file() else '不存在（先运行 quant db-init / db-migrate）'}")
+    print("-" * 62)
 
-    price_dir = data_dir / "a" / "stock" / "price"
-    print("-" * 60)
-    print("行情 (data/a/stock/price):")
-    if price_dir.is_dir():
-        pre = {f.name[len("price_"):-len("_pre.csv")] for f in price_dir.glob("price_*_pre.csv")}
-        cur = {f.name[len("price_"):-len("_cur.csv")] for f in price_dir.glob("price_*_cur.csv")}
-        print(f"  pre: {len(pre)} 只, cur: {len(cur)} 只")
-        only_cur = sorted(cur - pre)
-        only_pre = sorted(pre - cur)
-        print(f"  只有 cur 的股票: {len(only_cur)} 只" + (f"  例: {only_cur[:5]}" if only_cur else ""))
-        print(f"  只有 pre 的股票: {len(only_pre)} 只" + (f"  例: {only_pre[:5]}" if only_pre else ""))
-        if only_cur:
-            print("  ! 这些股票无法被 get_stock_price 读取（需要补 pre 文件）")
+    if DB_PATH.is_file():
+        with store.open_db() as conn:
+            counts = store.stats(conn)
+            for table in schema.ALL_TABLES:
+                if table == schema.TABLE_META:
+                    continue
+                print(f"  {table:<22} {counts.get(table, 0):>12,} 行")
+
+            if counts.get(schema.TABLE_DAILY_PRICE):
+                row = conn.execute(
+                    f"SELECT COUNT(DISTINCT symbol), MIN(date), MAX(date) FROM {schema.TABLE_DAILY_PRICE}"
+                ).fetchone()
+                print(f"  日线覆盖: {row[0]} 只股票, {row[1]} ~ {row[2]}")
+            if counts.get(schema.TABLE_FUNDAMENTAL):
+                row = conn.execute(
+                    f"SELECT COUNT(DISTINCT symbol), COUNT(DISTINCT season), MIN(season), MAX(season) "
+                    f"FROM {schema.TABLE_FUNDAMENTAL}"
+                ).fetchone()
+                print(f"  基本面覆盖: {row[0]} 只股票, {row[1]} 个季度, {row[2]} ~ {row[3]}")
+            version = store.get_meta(conn, "schema_version")
+            print(f"  schema_version: {version}（代码要求 {schema.SCHEMA_VERSION}）")
+
+            prices = conn.execute(f"SELECT COUNT(*) FROM {schema.TABLE_DAILY_PRICE}").fetchone()[0]
+            if prices == 0:
+                print("  ! 日线为空：先运行 quant db-migrate")
+            stocks = conn.execute(f"SELECT COUNT(*) FROM {schema.TABLE_STOCK_LIST}").fetchone()[0]
+            if stocks == 0:
+                print("  ! 股票列表为空：迁移后运行一次 quant db-migrate")
     else:
-        print("  无数据")
+        print("  （数据库不存在，跳过）")
 
-    financial_dir = data_dir / "a" / "stock" / "financial"
-    etf_dir = data_dir / "a" / "etf" / "price"
-    print("-" * 60)
-    print("其他:")
-    print(f"  financial: {len(list(financial_dir.glob('*.csv'))) if financial_dir.is_dir() else 0} 个文件")
-    print(f"  etf price: {len(list(etf_dir.glob('*.csv'))) if etf_dir.is_dir() else 0} 个文件")
+    print("-" * 62)
+    print("归档区 data/original:")
+    if ORIGINAL_DIR.is_dir():
+        for sub in sorted(p for p in ORIGINAL_DIR.iterdir() if p.is_dir()):
+            files = [f for f in sub.rglob("*") if f.is_file()]
+            size = sum(f.stat().st_size for f in files)
+            print(f"  {sub.name:<20} {len(files):>7} 个文件   {_human(size)}")
+    else:
+        print("  （尚无归档，运行 quant db-migrate --archive）")
     return 0
 
 
 # --------------------------------------------------------------------------
-# 下载
+# 数据库
 # --------------------------------------------------------------------------
-def cmd_download_jibenmian(args: argparse.Namespace) -> int:
-    """下载全市场季度基本面（业绩快报）。"""
-    from quant.data import download_a
+def cmd_db_init(_args: argparse.Namespace) -> int:
+    from quant.data import store
 
-    seasons = [f"{{year}}{s}" for s in args.season]
-    for table in args.tables:
-        print(f"[{table}] {args.start_year} ~ {args.end_year - 1}, 季度 {args.season}")
-        download_a.jibenmian_all_fast(table, args.start_year, args.end_year, seasons)
+    path = store.init_db()
+    print(f"数据库已就绪: {path}")
+    return 0
+
+
+def cmd_db_stats(_args: argparse.Namespace) -> int:
+    from quant.config import DB_PATH
+    from quant.data import schema, store
+
+    if not DB_PATH.is_file():
+        print(f"数据库不存在: {DB_PATH}；先运行 quant db-init")
+        return 1
+
+    with store.open_db() as conn:
+        for table in schema.ALL_TABLES:
+            if table == schema.TABLE_META:
+                continue
+            print(f"{table:<24} {store.table_count(conn, table):>12,}")
+    return 0
+
+
+def cmd_db_migrate(args: argparse.Namespace) -> int:
+    from quant.data import migrate, store
+
+    store.init_db()
+    with store.open_db() as conn:
+        result = migrate.run_all(
+            conn,
+            price_limit=args.price_limit,
+            financial_limit=args.financial_limit,
+        )
+    print("-" * 62)
+    for key, value in result.items():
+        print(f"{key:<14} {value}")
+
+    if args.archive or args.cleanup:
+        print("-" * 62)
+        moved = migrate.archive_originals()
+        total = sum(moved.values())
+        for path, size in moved.items():
+            print(f"归档 {path}  {_human(size)}")
+        print(f"共归档 {_human(total)}")
+
+    if args.cleanup:
+        freed = migrate.cleanup_sources(dry_run=not args.yes)
+        print("-" * 62)
+        total = sum(freed.values())
+        for path, size in freed.items():
+            action = "已删除" if args.yes else "将删除(加 --yes 执行)"
+            print(f"{action} {path}  {_human(size)}")
+        print(f"合计 {_human(total)}")
+        if not args.yes:
+            print("提示：确认数据无误后加 --yes 真正删除。")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# 更新
+# --------------------------------------------------------------------------
+def cmd_update_jibenmian(args: argparse.Namespace) -> int:
+    from quant.data import update
+
+    result = update.update_jibenmian(
+        args.from_year, args.to_year, tuple(args.tables), force=args.force, delay=args.delay
+    )
+    print("-" * 62)
+    print(f"目标季度: {len(result.get('seasons', []))} 个，新下载 {result.get('downloaded', 0)} 个文件")
+    print(f"摄入数据库: {result.get('rows', 0)} 行 / {result.get('ingested_seasons', 0)} 个季度")
+    return 0
+
+
+def cmd_update_price(args: argparse.Namespace) -> int:
+    from quant.data import update
+
+    mode = "full" if args.full else args.mode
+    result = update.update_price(
+        args.stock, mode=mode, start=args.start, limit=args.limit, delay=args.delay
+    )
+    print("-" * 62)
+    print(f"模式 {result['mode']}：处理 {result['symbols']} 只，更新 {result['updated']} 只，"
+          f"跳过 {result['skipped']} 只，新增 {result['rows']} 行")
+    if result["failures"]:
+        print(f"失败 {len(result['failures'])} 只: {result['failures'][:10]}")
+    return 0
+
+
+def cmd_update_etf(args: argparse.Namespace) -> int:
+    from quant.data import update
+
+    result = update.update_etf(args.symbol, start=args.start, end=args.end, delay=args.delay)
+    print("-" * 62)
+    print(f"ETF：处理 {result['symbols']} 只，更新 {result['updated']} 只，新增 {result['rows']} 行")
+    if result["failures"]:
+        print(f"失败 {len(result['failures'])} 只: {result['failures'][:10]}")
+    return 0
+
+
+def cmd_update_all(args: argparse.Namespace) -> int:
+    from quant.data import update
+
+    result = update.update_all(price_limit=args.price_limit)
+    print("-" * 62)
+    for key, value in result.items():
+        print(f"{key:<12} {value}")
+    return 0
+
+
+def cmd_rebuild_growth(args: argparse.Namespace) -> int:
+    from quant.data import update
+
+    result = update.rebuild_growth(
+        season_start=args.season_start, drop_broken=args.only_complete
+    )
+    print("-" * 62)
+    print(f"单季增长表: {result.get('rows', 0)} 行 / {result.get('symbols', 0)} 只股票")
+    if result.get("message"):
+        print(result["message"])
     return 0
 
 
 def cmd_calc_growth(args: argparse.Namespace) -> int:
-    """合并基本面三表并计算单季增长，导出 CSV。"""
-    from quant.foundation import growth
+    """导出单季增长 CSV（英文列名）。
 
-    print(f"开始计算增长数据...(起始年: {args.from_year})")
-    df = growth.load_jibenmian(str(args.from_year) + "-01-01")
-    df = growth.rm_broken_stocks(df)
-    df = growth.growth_score(df)
-    if df is None:
-        print("计算失败：首个季度必须是 XXXX0331")
+    口径与重构前的 calc_a_growth 一致：读取指定起始年以后的季度 ->
+    剔除季度不全的股票 -> 计算单季增长 -> 导出。
+    """
+    from quant.data import store
+    from quant.foundation import growth as growth_module
+
+    season_start = int(f"{args.from_year}0101")
+    with store.open_db() as conn:
+        raw = store.read_fundamental(conn, season_start, None)
+
+    if raw.empty:
+        print(f"数据库中没有 {season_start} 之后的基本面数据")
         return 1
+
+    df = growth_module.rm_broken_stocks(raw) if args.complete_only else raw
+    df = growth_module.compute_growth(df)
+
+    columns = ["symbol", "season", *[c for c in raw.columns if c not in ("symbol", "season")],
+               "pre_year_income", "season_income", "season_income_growth",
+               "pre_year_profit", "season_profit", "season_profit_growth"]
+    df = df.loc[:, [c for c in columns if c in df.columns]]
+
+    if args.legacy_columns:
+        from quant.data.schema import LEGACY_GROWTH_COLUMN_MAP
+
+        df = df.rename(columns=LEGACY_GROWTH_COLUMN_MAP)
 
     out = Path(args.out) if args.out else (config.DATA_DIR / f"{args.from_year}01-lastseason.csv")
     df.to_csv(out, index=False, encoding="utf_8_sig")
-    print(f"已导出 {out} ({len(df)} 行)")
-    return 0
-
-
-def cmd_download_price(args: argparse.Namespace) -> int:
-    """下载日线数据。"""
-    from quant.data import download_a, fsutil
-
-    if args.stock:
-        for stock_id in args.stock:
-            download_a.stock_price(stock_id, down_preyear=(args.mode == "yearly"), force=args.force)
-        return 0
-
-    stock_ids = download_a.all_a_stocks()
-    if args.limit:
-        stock_ids = stock_ids[: args.limit]
-
-    if args.mode == "yearly":
-        print("归档现有 pre/cur 文件到 temp 目录 ...")
-        fsutil.clear_price_a_files("pre")
-        fsutil.clear_price_a_files("cur")
-        down_pre = True
-    else:
-        print("归档现有 cur 文件到 temp 目录 ...")
-        fsutil.clear_price_a_files("cur")
-        down_pre = False
-
-    print(f"开始下载 {len(stock_ids)} 只股票的日线 (down_pre={down_pre}) ...")
-    for index, stock_id in enumerate(stock_ids, 1):
-        print(f"[{index}/{len(stock_ids)}] {stock_id}")
-        download_a.stock_price(stock_id, down_pre, force=args.force)
-    return 0
-
-
-def cmd_download_etf(args: argparse.Namespace) -> int:
-    """下载 ETF 日线。"""
-    from quant.data import download_a
-
-    download_a.download_etf(start_date=args.start, end_date=args.end)
-    return 0
-
-
-def cmd_download_us(args: argparse.Namespace) -> int:
-    """下载知名美股清单。"""
-    from quant.data import download_us
-
-    download_us.good_stocks(args.out)
+    seasons = df["season"].nunique() if "season" in df.columns else "?"
+    print(f"已导出 {out} ({len(df)} 行, {seasons} 个季度)")
     return 0
 
 
@@ -189,42 +298,69 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("info", help="打印配置与依赖自检").set_defaults(func=cmd_info)
-    sub.add_parser("check", help="数据目录体检").set_defaults(func=cmd_check)
+    sub.add_parser("check", help="数据体检（数据库 + 归档区）").set_defaults(func=cmd_check)
 
-    p = sub.add_parser("download-jibenmian", help="下载全市场季度基本面")
-    p.add_argument("--start-year", type=int, default=2023)
-    p.add_argument("--end-year", type=int, default=2024, help="结束年（不含）")
+    # --- 数据库 ---
+    sub.add_parser("db-init", help="建库建表").set_defaults(func=cmd_db_init)
+    sub.add_parser("db-stats", help="查看各表行数").set_defaults(func=cmd_db_stats)
+
+    p = sub.add_parser("db-migrate", help="历史 CSV 迁移到 SQLite")
+    p.add_argument("--price-limit", type=int, default=None, help="只迁移前 N 只股票的日线（试跑用）")
+    p.add_argument("--financial-limit", type=int, default=None, help="只迁移前 N 只财务指标")
+    p.add_argument("--archive", action="store_true", help="迁移后把原始 CSV 归档到 data/original/")
+    p.add_argument("--cleanup", action="store_true", help="归档后删除已入库的行情 CSV（需配 --yes）")
+    p.add_argument("--yes", action="store_true", help="确认执行删除")
+    p.set_defaults(func=cmd_db_migrate)
+
+    # --- 更新 ---
+    p = sub.add_parser("update-jibenmian", help="补齐缺失季度并摄入数据库")
+    p.add_argument("--from-year", type=int, default=None, help="起始年，默认从库中最新季度继续")
+    p.add_argument("--to-year", type=int, default=None, help="结束年（含），默认今年")
     p.add_argument("--tables", nargs="+", default=["zcfz", "lrb", "xjll"], choices=["zcfz", "lrb", "xjll"])
-    p.add_argument("--season", nargs="+", default=["0331", "0630", "0930", "1231"])
-    p.set_defaults(func=cmd_download_jibenmian)
+    p.add_argument("--force", action="store_true", help="已存在的季度文件也重新下载")
+    p.add_argument("--delay", type=float, default=3.0, help="每次请求间隔秒数")
+    p.set_defaults(func=cmd_update_jibenmian)
 
-    p = sub.add_parser("calc-growth", help="计算基本面单季增长并导出 CSV")
-    p.add_argument("--from-year", type=int, default=2021)
-    p.add_argument("--out", default=None, help="输出路径，默认 <DATA_DIR>/<from-year>01-lastseason.csv")
-    p.set_defaults(func=cmd_calc_growth)
-
-    p = sub.add_parser("download-price", help="下载日线数据")
-    p.add_argument("--mode", choices=["cur", "yearly"], default="cur")
+    p = sub.add_parser("update-price", help="追加最新日线")
     p.add_argument("--stock", nargs="+", default=None, help="指定股票代码，缺省为全市场")
-    p.add_argument("--limit", type=int, default=None, help="只处理前 N 只（调试用）")
-    p.add_argument("--force", action="store_true", help="强制重下当年数据")
-    p.set_defaults(func=cmd_download_price)
+    p.add_argument("--limit", type=int, default=None, help="只处理前 N 只（试跑用）")
+    p.add_argument("--mode", choices=["incremental", "full"], default="incremental")
+    p.add_argument("--full", action="store_true", help="等同于 --mode full")
+    p.add_argument("--start", default="20100101", help="full 模式或首次入库的起始日期")
+    p.add_argument("--delay", type=float, default=0.3, help="每只股票请求间隔秒数")
+    p.set_defaults(func=cmd_update_price)
 
-    p = sub.add_parser("download-etf", help="下载 ETF 日线")
+    p = sub.add_parser("update-etf", help="追加 ETF 日线")
+    p.add_argument("--symbol", nargs="+", default=None)
     p.add_argument("--start", default="20180101")
-    p.add_argument("--end", default="20230201")
-    p.set_defaults(func=cmd_download_etf)
+    p.add_argument("--end", default=None)
+    p.add_argument("--delay", type=float, default=0.3)
+    p.set_defaults(func=cmd_update_etf)
 
-    p = sub.add_parser("download-us", help="下载知名美股清单")
+    p = sub.add_parser("update-all", help="一键更新（基本面 -> 增长 -> 日线 -> ETF）")
+    p.add_argument("--price-limit", type=int, default=None)
+    p.set_defaults(func=cmd_update_all)
+
+    p = sub.add_parser("rebuild-growth", help="从 fundamental 重算单季增长表")
+    p.add_argument("--season-start", type=int, default=None, help="只重算该季度及以后（YYYYMMDD）")
+    p.add_argument("--only-complete", action="store_true",
+                   help="只保留所有季度都完整的股票（默认全市场，缺失季度留空）")
+    p.set_defaults(func=cmd_rebuild_growth)
+
+    p = sub.add_parser("calc-growth", help="导出单季增长 CSV（与旧 calc_a_growth 同口径）")
+    p.add_argument("--from-year", type=int, default=2021)
     p.add_argument("--out", default=None)
-    p.set_defaults(func=cmd_download_us)
+    p.add_argument("--all-stocks", dest="complete_only", action="store_false",
+                   help="不剔除季度不全的股票（默认剔除，与旧实现一致）")
+    p.add_argument("--legacy-columns", action="store_true", help="输出旧版中文列名")
+    p.set_defaults(func=cmd_calc_growth, complete_only=True)
 
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI 主函数，返回进程退出码。"""
-    config.setup_logging()
+    config.setup_logging(logging.INFO)
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

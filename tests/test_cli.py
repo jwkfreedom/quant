@@ -2,29 +2,50 @@
 
 from __future__ import annotations
 
+import pytest
+
 from quant.cli import build_parser, main
 
-
-def test_parser_has_all_subcommands():
-    parser = build_parser()
-    for command in (
-        "info", "check", "download-jibenmian", "calc-growth",
-        "download-price", "download-etf", "download-us",
-    ):
-        args = parser.parse_args([command])
-        assert callable(args.func)
+SUBCOMMANDS = (
+    "info", "check", "db-init", "db-stats", "db-migrate",
+    "update-jibenmian", "update-price", "update-etf", "update-all",
+    "rebuild-growth", "calc-growth",
+)
 
 
-def test_calc_growth_defaults():
-    args = build_parser().parse_args(["calc-growth"])
-    assert args.from_year == 2021
-    assert args.out is None
+@pytest.mark.parametrize("command", SUBCOMMANDS)
+def test_parser_has_subcommand(command):
+    args = build_parser().parse_args([command])
+    assert callable(args.func)
 
 
-def test_download_price_mode():
-    args = build_parser().parse_args(["download-price", "--mode", "yearly", "--limit", "5"])
-    assert args.mode == "yearly"
+def test_update_price_defaults():
+    args = build_parser().parse_args(["update-price"])
+    assert args.mode == "incremental"
+    assert args.limit is None
+    assert args.stock is None
+
+
+def test_update_price_full_alias():
+    args = build_parser().parse_args(["update-price", "--full", "--limit", "5"])
+    assert args.full is True
     assert args.limit == 5
+
+
+def test_db_migrate_flags():
+    args = build_parser().parse_args(["db-migrate", "--archive", "--cleanup", "--yes"])
+    assert args.archive and args.cleanup and args.yes
+
+
+def test_rebuild_growth_defaults():
+    args = build_parser().parse_args(["rebuild-growth"])
+    assert args.season_start is None
+    assert args.only_complete is False
+
+
+def test_calc_growth_complete_only_default():
+    assert build_parser().parse_args(["calc-growth"]).complete_only is True
+    assert build_parser().parse_args(["calc-growth", "--all-stocks"]).complete_only is False
 
 
 def test_info_command_runs(capsys):

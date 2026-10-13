@@ -455,5 +455,128 @@ PE/PB 排序依赖、O(n²) 循环、`pre/cur` 缺失）**保持原样**，留�
 
 ---
 
-*本文档随重构进展更新。阶段 1 分析结论已冻结；阶段 2 进展见第 9 节。*
+---
+
+## 10. 阶段 2.2 完成记录（数据稳定化 + 增量更新）
+
+### 10.1 存储架构
+
+SQLite 成为**唯一查询入口**，原始件归档到 `data/original/`，详见 [data_model.md](data_model.md)。
+
+| 表 | 行数 | 说明 |
+|---|---|---|
+| `stock_list` | 5,384 | 代码 + 简称 |
+| `daily_price` | 10,193,800 | 4,925 只股票，2010-01-04 ~ 2023-11-30 |
+| `etf_daily` | 43,284 | 62 只 ETF |
+| `fundamental` | 199,909 | 5,384 只股票 × 56 个季度（20100331 ~ 20231231） |
+| `fundamental_growth` | 199,909 | 单季增长 |
+| `financial_indicator` | 136,223 | 2,721 只股票，精选 29 列 + 2 列 TTM |
+| `trade_record` | 13 | 历史选股/交易记录 |
+
+### 10.2 新增模块
+
+| 文件 | 职责 |
+|---|---|
+| `quant/data/schema.py` | 数据契约：中文列名 -> 英文列名映射、各表列定义、`DISPLAY_NAMES` 展示名 |
+| `quant/data/store.py` | SQLite 建表 / 写入 / 查询 / 统计 |
+| `quant/data/frames.py` | 原始 DataFrame -> 可写库结构的规范化（日期、去重、数值化） |
+| `quant/data/migrate.py` | 一次性 CSV -> SQLite 迁移、`original/` 归档、重复数据清理 |
+| `quant/data/update.py` | 增量更新：季度基本面 / 日线 / ETF / 派生表 |
+
+### 10.3 新增命令
+
+```
+quant db-init / db-stats / db-migrate [--archive] [--cleanup --yes]
+quant update-jibenmian / update-price / update-etf / update-all / rebuild-growth
+quant calc-growth [--legacy-columns]
+```
+
+旧的 `download-jibenmian / download-price / download-etf` 已由 `update-*` 取代
+（增量语义，不再有 pre/cur 双文件与 temp 归档目录）。
+
+### 10.4 修复的历史问题（原 5.4 编号）
+
+| 原编号 | 问题 | 处理 |
+|---|---|---|
+| 14 | 三表 merge 产生 `_x/_y` 重复列名 | 迁移时按表分别重命名后合并，列名唯一且英文 |
+| 15 | `to_csv` 带出匿名索引列 `Unnamed: 0` | 入库路径不再落盘 CSV；归档保留原样 |
+| 16 | `.item()` 遇多行/缺行直接抛异常 | `calc_ttm` / `fix_bvps` / `compute_growth` 全部向量化，缺数据返回 NaN |
+| 17 | PE/PB 依赖「组内行序」 | 计算前显式按日期排序，按季度首行取值，行序不再影响结果 |
+| 19 | `growth_score` 逐股票双重循环（O(n²)） | 改为向量化（merge + 广播），24 万行秒级完成 |
+| 21 | 22 只股票只有 `cur.csv`，读取必崩 | 数据入 `daily_price` 后不存在 pre/cur 概念，问题消失 |
+| — | 个股缺失 pre/cur 导致 FileNotFoundError | 同上 |
+| — | 冗余数据 2.1 GB（temp 890MB + price.zip 316MB + 归档副本） | 归档到 `original/`，重复副本删除（见 10.6） |
+
+### 10.5 等价性验证（全部通过）
+
+| 验证项 | 方法 | 结果 |
+|---|---|---|
+| 日线（抽查） | 12 只股票（含 22 只缺 pre 中的 2 只）CSV vs 库，逐列比较 | **max_abs_diff = 0** |
+| 日线（全量） | 全部 4,925 只：行数 + `close_qfq` 合计 + `volume` 合计 + 日期范围 | **4,925 只全部一致，0 处不符**（10,193,800 行） |
+| 单季增长 | 旧 `stockdata.py`（CSV 路径）vs 新 `compute_growth`（SQLite 路径），同一数据快照 | 6 个计算列 **max_abs_diff = 0**，行数/股票集合完全一致（15,156 行 / 1,263 只） |
+| `get_full_price` | 旧实现 vs 新实现，比较 `close` / `close_org` / `PE` / `PB` | season ≥ 20120331 **max_abs_diff = 0** |
+| `calc-growth` 导出 | 与旧 `calc_a_growth` 同口径导出 | 行数、季度数、股票集合一致 |
+| 单测 | `pytest` | **68 passed** |
+
+**唯一的有意差异**：旧实现在 `fix_financial_data` 里硬编码截断了 `report_date < 2011-01-01`，
+导致 `season <= 20111231` 缺去年年报而算不出 TTM，这些季度的 PE/PB 全为 0。
+新实现取消该截断，因此 2011 年及以前**多出**真实估值数据（已验证：旧实现全 0，新实现有值）。
+2012Q1 起两者完全一致。
+
+### 10.6 数据治理结果
+
+| 动作 | 内容 |
+|---|---|
+| 归档 | `jibenmian/`(99MB) + `financial/`(78MB) + `stock_statements/`(914MB) + `etf/` 清单 -> `data/original/` |
+| 删除 | `data/a/stock/price/`(950MB)、`data/a/stock/temp/`(890MB)、`price.zip`(316MB)、`data/a/etf/price/` |
+| 结果 | 数据总量从 **6.17 GB 降到约 2.9 GB**（`quant.db` 约 1.8 GB + `original/` 1.1 GB） |
+
+> 归档副本在删除前做过逐目录的文件名 + 大小一致性核对（6 组目录全部一致）。
+
+### 10.7 增量更新实测
+
+| 命令 | 结果 |
+|---|---|
+| `quant update-price --stock 000001` | 从库中最后交易日 2023-11-30 续拉到 2026-10-13，新增 713 行（**空档 3 年一次补齐**） |
+| `quant update-etf --symbol 512480 159611` | 新增 1,790 行，两只 ETF 均更新到 2026-10-13 |
+| `quant update-jibenmian --from-year 2024 --to-year 2024` | 下载 12 个季度文件到 `data/original/jibenmian/`，增量摄入 20,623 行 / 4 个季度 |
+| `quant rebuild-growth` | 220,532 行 / 5,384 只股票 |
+
+更新后的数据库现状：
+
+| 表 | 行数 |
+|---|---|
+| `daily_price` | 10,194,513（4,925 只，2010-01-04 ~ 2026-10-13） |
+| `etf_daily` | 45,074 |
+| `fundamental` | 220,532（5,384 只 × 60 个季度，20100331 ~ 20241231） |
+| `fundamental_growth` | 220,532 |
+| `financial_indicator` | 136,223 |
+
+> 注：`financial_indicator` 仍是 2023 年以前的历史数据，需要等 `financial_report` 的更新通道
+> （阶段 2.3 补）才能让 PE/PB 跟上最新行情。
+
+### 10.8 待办：删除残留的 data/a
+
+`data/a/`（3.16 GB，37,385 个文件）内容已全部归档到 `data/original/` 并进入 `quant.db`，
+但该目录不在当前文件沙箱的可写 ACL 内，自动删除被拒。请在**普通终端**（不受沙箱限制）执行一次：
+
+```bat
+:: 双击运行（推荐）
+scripts\cleanup_data_a.bat
+
+:: 或在 cmd.exe 里
+rd /s /q data\a
+
+:: 或在 PowerShell 里（注意：PowerShell 中 rd 是 Remove-Item 的别名，不认 /s /q）
+cmd /c "rd /s /q data\a"
+:: 或
+Remove-Item -Recurse -Force .\data\a
+```
+
+删除后数据总量从 6.19 GB 降到约 2.9 GB（`quant.db` 1.98 GB + `original/` 1.10 GB）。
+
+---
+
+*本文档随重构进展更新。阶段 1 分析结论已冻结；2.1 见第 9 节，2.2 见第 10 节。*
+
 
