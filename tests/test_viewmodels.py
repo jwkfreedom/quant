@@ -193,6 +193,62 @@ def test_stock_detail_unknown_symbol(conn):
     assert detail.metrics == {}
 
 
+# --------------------------------------------------------------------------
+# 参数扫描
+# --------------------------------------------------------------------------
+def test_sweep_values_int():
+    assert vm.sweep_values(5, 20, 5) == [5, 10, 15, 20]
+    assert vm.sweep_values(1, 3, 1) == [1, 2, 3]
+
+
+def test_sweep_values_float():
+    values = vm.sweep_values(0.1, 0.5, 0.2)
+    assert values == [0.1, 0.3, 0.5]
+
+
+def test_sweep_values_errors():
+    with pytest.raises(ValueError):
+        vm.sweep_values(1, 10, 0)
+    with pytest.raises(ValueError):
+        vm.sweep_values(10, 1, 1)
+
+
+def test_sweep_backtest_collects_metrics(monkeypatch):
+    from quant.strategy import BacktestResult
+
+    calls = []
+
+    def fake_run(name, symbol=None, **kwargs):
+        calls.append((name, symbol, kwargs))
+        value = kwargs.get("ma_period", 0)
+        return BacktestResult(name, symbol or "", 100000.0, 100000.0 + value * 1000,
+                              trades=value, win_trades=value // 2)
+
+    monkeypatch.setattr(vm, "run_backtest", fake_run)
+    table = vm.sweep_backtest("ma_obv", "512480", "ma_period", [5, 10, 20], cash=100000)
+
+    assert table["ma_period"].tolist() == [5, 10, 20]
+    assert table["trades"].tolist() == [5, 10, 20]
+    assert "strategy" not in table.columns and "symbol" not in table.columns
+    assert len(calls) == 3
+
+
+def test_sweep_backtest_tolerates_failure(monkeypatch):
+    from quant.strategy import BacktestResult
+
+    def flaky(name, symbol=None, **kwargs):
+        if kwargs.get("ma_period") == 10:
+            raise RuntimeError("boom")
+        return BacktestResult(name, symbol or "", 100000.0, 100000.0)
+
+    monkeypatch.setattr(vm, "run_backtest", flaky)
+    table = vm.sweep_backtest("ma_obv", "512480", "ma_period", [5, 10, 20])
+
+    assert len(table) == 3
+    assert table.loc[table["ma_period"] == 10, "error"].notna().all()
+    assert table.loc[table["ma_period"] == 5, "return_pct"].notna().all()
+
+
 def test_stock_list_search(conn):
     assert len(vm.stock_list(conn=conn)) == len(SYMBOLS)
     assert len(vm.stock_list(conn=conn, keyword="测试")) == len(SYMBOLS)

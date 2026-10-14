@@ -20,33 +20,66 @@ MAX_GRID_ROWS = 2000
 
 
 class DataFrameGrid(wx.grid.Grid):
-    """把 DataFrame 显示成表格。"""
+    """把 DataFrame 显示成表格。
 
-    def __init__(self, parent):
+    支持：
+        - 点击列头排序（升序/降序/取消）
+        - 双击某行触发 `on_row_activated(row_dict)`
+        - 右键菜单 `on_context_menu(row_dict, event)`（默认提供「复制」）
+        - 复制选中单元格 / 整行到剪贴板
+    """
+
+    def __init__(self, parent, *, sortable: bool = True):
         super().__init__(parent)
         self._df = pd.DataFrame()
+        self._original = pd.DataFrame()
+        self._view_columns: list[str] = []
+        self._display_names = False
+        self._sort_column: str | None = None
+        self._sort_ascending = False
+        self._sortable = sortable
+        self.on_row_activated = None       # Callable[[dict], None]
+        self.on_context_menu = None        # Callable[[dict, wx.Event], None]
+
         self.CreateGrid(0, 0)
         self.SetRowLabelSize(60)
         self.EnableEditing(False)
         # wx.grid 没有 SetAlternateRowColour，用默认底色代替（隔行变色仅在部分版本可用）
         self.SetDefaultCellBackgroundColour(wx.Colour(255, 255, 255))
 
+        if sortable:
+            self.Bind(wx.grid.EVT_GRID_LABEL_LEFT_CLICK, self._on_label_click)
+        self.Bind(wx.grid.EVT_GRID_CELL_LEFT_DCLICK, self._on_double_click)
+        self.Bind(wx.grid.EVT_GRID_CELL_RIGHT_CLICK, self._on_right_click)
+        self.Bind(wx.grid.EVT_GRID_LABEL_RIGHT_CLICK, self._on_right_click)
+        self.Bind(wx.EVT_KEY_DOWN, self._on_key)
+
+    # ------------------------------------------------------------------
     @property
     def frame(self) -> pd.DataFrame:
+        """当前显示的完整数据（未截断、未按展示名改名）。"""
         return self._df
 
     def SetDataFrame(self, df: pd.DataFrame, *, display_names: bool = False, max_rows: int = MAX_GRID_ROWS):
         """填充表格。列名可选中文展示。"""
-        from quant.data import schema
-
         if df is None:
             df = pd.DataFrame()
 
-        view = df.head(max_rows).copy()
-        if display_names:
+        self._df = df.reset_index(drop=True)
+        self._original = self._df.copy()
+        self._display_names = display_names
+        self._sort_column = None
+        self._sort_ascending = False
+        self._render(max_rows=max_rows)
+
+    def _render(self, *, max_rows: int = MAX_GRID_ROWS):
+        from quant.data import schema
+
+        data = self._df
+        view = data.head(max_rows).copy()
+        if self._display_names:
             view = schema.rename_for_display(view)
 
-        self._df = df
         self.Freeze()
         try:
             if self.GetNumberRows():
@@ -55,12 +88,14 @@ class DataFrameGrid(wx.grid.Grid):
                 self.DeleteCols(0, self.GetNumberCols())
 
             if view.empty:
+                self._view_columns = []
                 self.AppendRows(0)
                 self.AppendCols(0)
                 return
 
             # 用字符串列，避免 numpy 类型在 grid 里显示成 object
             text = view.astype(object).where(pd.notnull(view), "").astype(str)
+            self._view_columns = list(text.columns)
 
             self.AppendCols(len(text.columns))
             self.AppendRows(len(text))
@@ -69,12 +104,154 @@ class DataFrameGrid(wx.grid.Grid):
             for row_index, row in enumerate(text.itertuples(index=False)):
                 for col_index, value in enumerate(row):
                     self.SetCellValue(row_index, col_index, value)
-            self.AutoSizeColumns(False)
+
             for index in range(len(text.columns)):
-                width = max(80, min(200, self.GetColLabelValue(index).__len__() * 14 + 40))
+                width = max(80, min(220, len(str(text.columns[index])) * 14 + 40))
                 self.SetColSize(index, width)
         finally:
             self.Thaw()
+
+    # ------------------------------------------------------------------
+    # 排序
+    # ------------------------------------------------------------------
+    def _on_label_click(self, event: wx.grid.GridEvent):
+        col = event.GetCol()
+        if col < 0:            # 点的是行号
+            event.Skip()
+            return
+        if col >= len(self._view_columns):
+            return
+
+        column = self._view_columns[col]
+        if column not in self._df.columns:
+            return
+
+        if self._sort_column != column:
+            self._sort_column, self._sort_ascending = column, False
+        elif not self._sort_ascending:
+            self._sort_ascending = True
+        else:                  # 第三次点击：取消排序
+            self._sort_column, self._sort_ascending = None, False
+
+        if self._sort_column:
+            self._df = self._df.sort_values(
+                self._sort_column, ascending=self._sort_ascending, kind="mergesort",
+                na_position="last",
+            ).reset_index(drop=True)
+        else:
+            self._df = self._original.copy()   # 取消排序时恢复原始顺序
+        self._render()
+        self._refresh_header_labels()
+
+    def _refresh_header_labels(self):
+        from quant.data import schema
+
+        for index, column in enumerate(self._view_columns):
+            source = column
+            if self._display_names:
+                for key, label in schema.DISPLAY_NAMES.items():
+                    if label == column:
+                        source = key
+                        break
+            if self._sort_column == source:
+                self.SetColLabelValue(index, f"{column} {'▲' if self._sort_ascending else '▼'}")
+            else:
+                self.SetColLabelValue(index, str(column))
+
+    # ------------------------------------------------------------------
+    # 选择 / 复制 / 回调
+    # ------------------------------------------------------------------
+    def row_at(self, row: int):
+        """返回第 row 行对应的原始数据（dict）。"""
+        if row < 0 or row >= len(self._df):
+            return None
+        return self._df.iloc[row].to_dict()
+
+    def selected_row(self):
+        """当前光标所在行的原始数据。"""
+        return self.row_at(self.GetGridCursorRow())
+
+    def selected_rows(self) -> pd.DataFrame:
+        """所有被选中的行的原始数据（没有选区时返回光标所在行）。"""
+        tops = self.GetSelectionBlockTopLeft()
+        bottoms = self.GetSelectionBlockBottomRight()
+
+        if not tops:
+            row = self.GetGridCursorRow()
+            return self._df.iloc[[row]] if 0 <= row < len(self._df) else self._df.head(0)
+
+        indexes: set[int] = set()
+        for (top, _left), (bottom, _right) in zip(tops, bottoms):
+            indexes.update(range(top, bottom + 1))
+        ordered = sorted(i for i in indexes if 0 <= i < len(self._df))
+        return self._df.iloc[ordered] if ordered else self._df.head(0)
+
+    def copy_selection(self) -> int:
+        """把选中区域复制成 TSV 到剪贴板，返回行数。"""
+        top, left = self.GetSelectionBlockTopLeft()[0] if self.GetSelectionBlockTopLeft() else (
+            self.GetGridCursorRow(), self.GetGridCursorCol())
+        bottom, right = self.GetSelectionBlockBottomRight()[0] if self.GetSelectionBlockBottomRight() else (
+            top, left)
+
+        lines = ["\t".join(self.GetColLabelValue(c) for c in range(left, right + 1))]
+        for r in range(top, bottom + 1):
+            lines.append("\t".join(self.GetCellValue(r, c) for c in range(left, right + 1)))
+        text = "\n".join(lines)
+
+        if wx.TheClipboard.Open():
+            wx.TheClipboard.SetData(wx.TextDataObject(text))
+            wx.TheClipboard.Close()
+        return bottom - top + 1
+
+    def _on_double_click(self, event: wx.grid.GridEvent):
+        row = self.row_at(event.GetRow())
+        if row is not None and self.on_row_activated is not None:
+            self.on_row_activated(row)
+
+    def _on_right_click(self, event: wx.grid.GridEvent):
+        row = self.row_at(event.GetRow()) if event.GetRow() >= 0 else None
+        if row is None:
+            return
+
+        menu = ContextMenu(self, row)
+        menu.add("复制选中区域", lambda _row: self.copy_selection())
+        if self.on_context_menu is not None:
+            self.on_context_menu(row, menu)
+        menu.popup(event.GetPosition())
+
+    def _on_key(self, event: wx.KeyEvent):
+        if event.GetKeyCode() == ord("C") and event.ControlDown():
+            self.copy_selection()
+        else:
+            event.Skip()
+
+
+class ContextMenu:
+    """表格右键菜单：页面通过 `add(label, callback)` 注册菜单项。
+
+    回调签名是 `callback(row_dict)`，其中 row_dict 是该行的原始数据。
+    """
+
+    def __init__(self, grid: "DataFrameGrid", row: dict):
+        self._grid = grid
+        self._row = row
+        self._menu = wx.Menu()
+        self._callbacks: dict[int, object] = {}
+
+    def add(self, label: str, callback) -> int:
+        item = self._menu.Append(wx.ID_ANY, label)
+        self._callbacks[item.GetId()] = callback
+        return item.GetId()
+
+    def separator(self) -> None:
+        self._menu.AppendSeparator()
+
+    def popup(self, position) -> None:
+        chosen = self._grid.GetPopupMenuSelectionFromUser(self._menu, position)
+        callback = self._callbacks.get(chosen)
+        self._menu.Destroy()
+        if callback is not None:
+            callback(self._row)
 
 
 class FigurePanel(wx.Panel):

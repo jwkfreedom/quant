@@ -167,6 +167,8 @@ class ScreenerPanel(wx.Panel):
         right.Add(self.steps, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
 
         self.grid = DataFrameGrid(self)
+        self.grid.on_row_activated = self.jump_to_stock
+        self.grid.on_context_menu = self.build_context_menu
         right.Add(self.grid, 1, wx.EXPAND | wx.ALL, 6)
 
         hint = wx.StaticText(self, label="提示：双击某一行可以跳到「个股分析」查看图表")
@@ -180,6 +182,47 @@ class ScreenerPanel(wx.Panel):
     # ------------------------------------------------------------------
     def specs(self) -> list[str]:
         return [spec for row in self.rows if (spec := row.spec())]
+
+    # ------------------------------------------------------------------
+    # 结果表交互
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _code_of(row: dict) -> str:
+        return str(row.get("symbol", "")).zfill(6)
+
+    def jump_to_stock(self, row: dict):
+        """双击结果行 -> 跳到个股分析页。"""
+        symbol = self._code_of(row)
+        frame = wx.GetTopLevelParent(self)
+        if hasattr(frame, "jump_to"):
+            frame.jump_to("个股分析", symbol=symbol)
+
+    def build_context_menu(self, row: dict, menu):
+        """结果表右键菜单。"""
+        symbol = self._code_of(row)
+        menu.separator()
+        menu.add("查看个股分析", lambda r: self.jump_to_stock(r))
+        menu.add(f"复制代码 {symbol}", lambda _r: self._copy_text(symbol))
+        menu.add("导出选中到 CSV", lambda _r: self.on_export_selected())
+
+    def _copy_text(self, text: str):
+        if wx.TheClipboard.Open():
+            wx.TheClipboard.SetData(wx.TextDataObject(text))
+            wx.TheClipboard.Close()
+
+    def on_export_selected(self):
+        selected = self.grid.selected_rows()
+        if selected.empty:
+            wx.MessageBox("没有选中的行", "提示", wx.OK | wx.ICON_INFORMATION, self)
+            return
+        path = ask_save_path(self, default_name="picks_selected.csv")
+        if not path:
+            return
+        try:
+            wx.MessageBox(f"已导出 {vm.export_frame(selected, path)}（{len(selected)} 行）",
+                          "完成", wx.OK | wx.ICON_INFORMATION, self)
+        except Exception as exc:
+            error_dialog(self, exc)
 
     def on_reset(self):
         for row in self.rows:

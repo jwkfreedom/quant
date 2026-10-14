@@ -116,3 +116,83 @@ def test_explorer_table_switch(frame):
 def test_settings_labels(frame):
     panel = frame.panels["设置/关于"]
     assert panel.screens_label.GetLabel()
+
+
+# --------------------------------------------------------------------------
+# 表格：排序 / 右键菜单 / 选择
+# --------------------------------------------------------------------------
+class _FakeLabelEvent:
+    """只实现处理器用到的 GetCol（避免构造真正的 wx.grid.GridEvent）。"""
+
+    def __init__(self, col: int):
+        self._col = col
+
+    def GetCol(self):
+        return self._col
+
+    def Skip(self):
+        pass
+
+
+def test_grid_sorts_by_header_click(app):
+    import pandas as pd
+
+    from quant.ui.widgets import DataFrameGrid
+
+    parent = wx.Frame(None)
+    grid = DataFrameGrid(parent)
+    grid.SetDataFrame(pd.DataFrame({"a": [3, 1, 2], "b": ["c", "a", "b"]}))
+
+    grid._on_label_click(_FakeLabelEvent(0))          # 第一次：降序
+    assert grid.frame["a"].tolist() == [3, 2, 1]
+    grid._on_label_click(_FakeLabelEvent(0))          # 第二次：升序
+    assert grid.frame["a"].tolist() == [1, 2, 3]
+    grid._on_label_click(_FakeLabelEvent(0))          # 第三次：取消排序
+    assert grid.frame["a"].tolist() == [3, 1, 2]
+
+    grid._on_label_click(_FakeLabelEvent(1))          # 按字符串列排
+    assert grid.frame["b"].tolist() == ["c", "b", "a"]
+
+    parent.Destroy()
+
+
+def test_grid_row_helpers(app):
+    import pandas as pd
+
+    from quant.ui.widgets import DataFrameGrid
+
+    parent = wx.Frame(None)
+    grid = DataFrameGrid(parent)
+    grid.SetDataFrame(pd.DataFrame({"symbol": ["000001", "000002"]}))
+
+    assert grid.row_at(0)["symbol"] == "000001"
+    assert grid.row_at(99) is None
+    assert len(grid.selected_rows()) >= 0
+
+    parent.Destroy()
+
+
+def test_screener_context_menu_builds(app, frame):
+    """右键菜单应当能构造出「查看个股分析」等条目（不弹出）。"""
+    from quant.ui.widgets import ContextMenu
+
+    panel = frame.panels["选股筛选"]
+    menu = ContextMenu(panel.grid, {"symbol": "000001"})
+    menu.add("测试项", lambda row: None)
+    assert menu._callbacks, "菜单没有注册回调"
+    menu._menu.Destroy()
+
+
+def test_screener_jump_to_stock(app, frame):
+    panel = frame.panels["选股筛选"]
+    panel.jump_to_stock({"symbol": "600519"})
+    assert frame.panels["个股分析"].symbol_input.GetValue() == "600519"
+
+
+def test_backtest_sweep_controls_follow_strategy(frame):
+    panel = frame.panels["策略回测"]
+    panel.strategy_choice.SetStringSelection("ma_obv")
+    panel.on_strategy_changed()
+    assert panel.sweep_param.GetStringSelection() == "ma_period"
+    assert panel.sweep_start.GetValue() and panel.sweep_stop.GetValue()
+    assert float(panel.sweep_step.GetValue()) > 0

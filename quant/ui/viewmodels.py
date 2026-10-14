@@ -462,6 +462,61 @@ def list_backtest_strategies():
     return list_strategies()
 
 
+def sweep_values(start: float, stop: float, step: float) -> list:
+    """生成扫描用的参数序列（整数参数自动取整）。"""
+    if step <= 0:
+        raise ValueError("步长必须大于 0")
+    if stop < start:
+        raise ValueError("结束值不能小于起始值")
+
+    values: list = []
+    current = start
+    is_int = float(start).is_integer() and float(stop).is_integer() and float(step).is_integer()
+    guard = 0
+    while current <= stop + 1e-9 and guard < 500:
+        values.append(int(round(current)) if is_int else round(float(current), 6))
+        current += step
+        guard += 1
+    if not values:
+        raise ValueError("没有生成任何参数值")
+    return values
+
+
+def sweep_backtest(
+    name: str,
+    symbol: str,
+    param: str,
+    values,
+    *,
+    progress=None,
+    **kwargs,
+) -> pd.DataFrame:
+    """对单个策略参数做网格扫描，每个取值跑一次回测。
+
+    进度回调 progress(done, total, value) 会被逐次调用（供界面显示）。
+    """
+    rows = []
+    total = len(values)
+    for index, value in enumerate(values, 1):
+        try:
+            result = run_backtest(name, symbol=symbol, **{param: value}, **kwargs)
+            row = {param: value, **result.metrics()}
+        except Exception as exc:  # 单个取值失败不应中断整轮扫描
+            row = {param: value, "return_pct": None, "annual_return": None, "sharpe": None,
+                   "max_drawdown_pct": None, "trades": None, "win_rate": None,
+                   "error": f"{type(exc).__name__}: {exc}"[:60]}
+        rows.append(row)
+        if progress is not None:
+            progress(index, total, value)
+
+    frame = pd.DataFrame(rows)
+    # 去掉与参数无关的列，避免界面表格太宽
+    for column in ("strategy", "symbol"):
+        if column in frame.columns:
+            frame = frame.drop(columns=column)
+    return frame
+
+
 def available_updates() -> list[dict]:
     """P1 页面上可触发的更新动作（命令 + 说明 + 是否耗时）。"""
     return [

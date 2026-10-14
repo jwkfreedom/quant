@@ -78,17 +78,65 @@ class BacktestPanel(wx.Panel):
 
         # ---------------- 右侧结果 ----------------
         right = wx.BoxSizer(wx.VERTICAL)
-        self.cards = MetricCards(self, columns=4)
-        right.Add(self.cards, 0, wx.EXPAND | wx.ALL, 6)
+        self.notebook = wx.Notebook(self)
 
-        self.figure_panel = FigurePanel(self)
-        self.figure_panel.SetMinSize((-1, 260))
-        right.Add(self.figure_panel, 1, wx.EXPAND | wx.ALL, 6)
+        # --- 页签 1：单次回测结果 ---
+        result_page = wx.Panel(self.notebook)
+        result_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.cards = MetricCards(result_page, columns=4)
+        result_sizer.Add(self.cards, 0, wx.EXPAND | wx.ALL, 6)
 
-        self.grid = DataFrameGrid(self)
-        self.grid.SetMinSize((-1, 160))
-        right.Add(self.grid, 1, wx.EXPAND | wx.ALL, 6)
+        self.figure_panel = FigurePanel(result_page)
+        self.figure_panel.SetMinSize((-1, 240))
+        result_sizer.Add(self.figure_panel, 1, wx.EXPAND | wx.ALL, 6)
 
+        self.grid = DataFrameGrid(result_page)
+        self.grid.SetMinSize((-1, 150))
+        result_sizer.Add(self.grid, 1, wx.EXPAND | wx.ALL, 6)
+        result_page.SetSizer(result_sizer)
+        self.notebook.AddPage(result_page, "回测结果")
+
+        # --- 页签 2：参数扫描 ---
+        sweep_page = wx.Panel(self.notebook)
+        sweep_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        sweep_controls = wx.BoxSizer(wx.HORIZONTAL)
+        sweep_controls.Add(wx.StaticText(sweep_page, label="参数"), 0,
+                           wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
+        self.sweep_param = wx.Choice(sweep_page, choices=[])
+        sweep_controls.Add(self.sweep_param, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
+
+        self.sweep_start = wx.TextCtrl(sweep_page, size=(70, -1))
+        self.sweep_stop = wx.TextCtrl(sweep_page, size=(70, -1))
+        self.sweep_step = wx.TextCtrl(sweep_page, size=(70, -1))
+        for label, control, hint in (("从", self.sweep_start, "起始值"),
+                                     ("到", self.sweep_stop, "结束值"),
+                                     ("步长", self.sweep_step, "步长")):
+            sweep_controls.Add(wx.StaticText(sweep_page, label=label), 0,
+                               wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
+            control.SetHint(hint)
+            sweep_controls.Add(control, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 2)
+
+        sweep_button = wx.Button(sweep_page, label="开始扫描")
+        sweep_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_sweep())
+        sweep_controls.Add(sweep_button, 0, wx.ALL, 6)
+
+        self.sweep_status = wx.StaticText(sweep_page, label="")
+        self.sweep_status.SetForegroundColour(wx.Colour(110, 110, 110))
+        sweep_controls.Add(self.sweep_status, 1, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
+        sweep_sizer.Add(sweep_controls, 0, wx.EXPAND | wx.ALL, 4)
+
+        self.sweep_figure_panel = FigurePanel(sweep_page)
+        self.sweep_figure_panel.SetMinSize((-1, 260))
+        sweep_sizer.Add(self.sweep_figure_panel, 1, wx.EXPAND | wx.ALL, 6)
+
+        self.sweep_grid = DataFrameGrid(sweep_page)
+        self.sweep_grid.SetMinSize((-1, 140))
+        sweep_sizer.Add(self.sweep_grid, 1, wx.EXPAND | wx.ALL, 6)
+        sweep_page.SetSizer(sweep_sizer)
+        self.notebook.AddPage(sweep_page, "参数扫描")
+
+        right.Add(self.notebook, 1, wx.EXPAND)
         root.Add(right, 1, wx.EXPAND | wx.ALL, 6)
         self.SetSizer(root)
 
@@ -111,6 +159,13 @@ class BacktestPanel(wx.Panel):
             self.symbol_input.SetValue(info.default_symbol)
         self._last_strategy = info.name
 
+        # 参数扫描的可选参数跟着策略走
+        if hasattr(self, "sweep_param"):
+            self.sweep_param.Set([p["name"] for p in info.params])
+            if info.params:
+                self.sweep_param.SetSelection(0)
+                self._fill_sweep_defaults(info.params[0])
+
         self.params_sizer.Clear(delete_windows=True)
         self.param_controls.clear()
         for param in info.params:
@@ -122,6 +177,69 @@ class BacktestPanel(wx.Panel):
             self.params_sizer.Add(control, 0)
             self.param_controls[param["name"]] = control
         self.Layout()
+
+    def _fill_sweep_defaults(self, param: dict):
+        """按参数类型给出默认的扫描区间。"""
+        default = param.get("default")
+        if not isinstance(default, (int, float)):
+            return
+        low = param.get("min", 1)
+        high = param.get("max", max(default * 3, 10))
+        step = 1 if isinstance(default, int) else round((high - low) / 20, 4) or 0.05
+        self.sweep_start.SetValue(str(low))
+        self.sweep_stop.SetValue(str(high))
+        self.sweep_step.SetValue(str(step))
+
+    def on_sweep(self):
+        """参数扫描：对选定参数逐个取值跑回测。"""
+        name = self.strategy_name
+        symbol = self.symbol_input.GetValue().strip()
+        if not symbol:
+            wx.MessageBox("请先填写标的代码", "提示", wx.OK | wx.ICON_INFORMATION, self)
+            return
+
+        param = self.sweep_param.GetStringSelection()
+        if not param:
+            return
+
+        try:
+            start = float(self.sweep_start.GetValue())
+            stop = float(self.sweep_stop.GetValue())
+            step = float(self.sweep_step.GetValue())
+            values = vm.sweep_values(start, stop, step)
+        except ValueError as exc:
+            error_dialog(self, exc)
+            return
+
+        if len(values) > 200:
+            if wx.MessageBox(f"将执行 {len(values)} 次回测，可能耗时较久，继续吗？",
+                             "确认", wx.YES_NO | wx.ICON_QUESTION, self) != wx.YES:
+                return
+
+        cash = float(self.cash_input.GetValue() or 100000)
+        commission = float(self.commission_input.GetValue() or 0.001)
+
+        def work():
+            return vm.sweep_backtest(
+                name, symbol, param, values,
+                progress=lambda done, total, value: wx.CallAfter(
+                    self.sweep_status.SetLabel, f"进度 {done}/{total}（{param}={value}）"),
+                cash=cash, commission=commission,
+            )
+
+        def done(table):
+            self.sweep_status.SetLabel(f"完成 {len(table)} 组")
+            self.sweep_grid.SetDataFrame(table)
+            try:
+                self.sweep_figure_panel.set_figure(
+                    charts.sweep_figure(table, x_column=param,
+                                        title=f"{name} @ {symbol}：{param} 扫描"))
+            except Exception as exc:  # pragma: no cover
+                error_dialog(self, exc)
+            self.Layout()
+
+        self.runner.run(work, done, on_error=lambda exc: error_dialog(self, exc),
+                        busy_message=f"参数扫描 {param}…")
 
     def _collect_params(self) -> dict:
         params = {}

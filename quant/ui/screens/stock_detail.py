@@ -9,6 +9,12 @@ from quant.ui.widgets import BusyRunner, DataFrameGrid, FigurePanel, error_dialo
 
 RANGES = [("近 3 月", 60), ("近 1 年", 250), ("近 3 年", 750), ("近 5 年", 1250), ("全部", 0)]
 
+#: K 线周期：显示名 -> 重采样频率
+FREQS = [("日线", "D"), ("周线", "W"), ("月线", "M")]
+
+#: 价格口径：显示名 -> charts.kline_figure 的 adjust
+PRICE_MODES = [("前复权", "qfq"), ("不复权", "raw")]
+
 
 def _fmt(value, digits: int = 2, unit: str = "", percent: bool = False) -> str:
     if value is None:
@@ -60,6 +66,24 @@ class StockDetailPanel(wx.Panel):
         self.range_choice.SetSelection(1)
         self.range_choice.Bind(wx.EVT_CHOICE, lambda _evt: self.render())
         top.Add(self.range_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
+
+        top.Add(wx.StaticText(self, label="周期"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
+        self.freq_choice = wx.Choice(self, choices=[name for name, _ in FREQS])
+        self.freq_choice.SetSelection(0)
+        self.freq_choice.Bind(wx.EVT_CHOICE, lambda _evt: self.render())
+        top.Add(self.freq_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
+
+        top.Add(wx.StaticText(self, label="复权"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
+        self.price_choice = wx.Choice(self, choices=[name for name, _ in PRICE_MODES])
+        self.price_choice.SetSelection(0)
+        self.price_choice.Bind(wx.EVT_CHOICE, lambda _evt: self.render())
+        top.Add(self.price_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
+
+        self.macd_check = wx.CheckBox(self, label="MACD")
+        self.rsi_check = wx.CheckBox(self, label="RSI")
+        for checkbox in (self.macd_check, self.rsi_check):
+            checkbox.Bind(wx.EVT_CHECKBOX, lambda _evt: self.render())
+            top.Add(checkbox, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
 
         top.AddStretchSpacer()
         self.title = wx.StaticText(self, label="")
@@ -177,6 +201,14 @@ class StockDetailPanel(wx.Panel):
         ]
         self.cards.set_metrics([(t, v, c) for t, v, c in items])
 
+    @property
+    def freq(self) -> str:
+        return FREQS[self.freq_choice.GetSelection()][1]
+
+    @property
+    def adjust(self) -> str:
+        return PRICE_MODES[self.price_choice.GetSelection()][1]
+
     def _sliced(self, frame):
         if frame is None or frame.empty:
             return frame
@@ -190,8 +222,21 @@ class StockDetailPanel(wx.Panel):
         valuation = self._sliced(self.detail.valuation)
         title = f"{self.detail.symbol} {self.detail.name}"
 
+        freq = self.freq
+        adjust = self.adjust
+        freq_label = FREQS[self.freq_choice.GetSelection()][0]
+        mode_label = PRICE_MODES[self.price_choice.GetSelection()][0]
+
         try:
-            self.kline_panel.set_figure(charts.kline_figure(price, title=f"{title} K线"))
+            kline_source = charts.resample_ohlc(price, freq) if freq != "D" else price
+            self.kline_panel.set_figure(charts.kline_figure(
+                kline_source,
+                title=f"{title} {freq_label}（{mode_label}）",
+                adjust=adjust,
+                ma_periods=(5, 10, 20, 60) if freq == "D" else (5, 10, 20),
+                macd=self.macd_check.GetValue(),
+                rsi=self.rsi_check.GetValue(),
+            ))
             self.band_panel.set_figure(charts.valuation_band_figure(valuation, title=f"{title} 估值带"))
             self.finance_panel.set_figure(
                 charts.financial_figure(self.detail.fundamental, self.detail.growth, title=f"{title} 财务"))
