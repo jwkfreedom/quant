@@ -1,14 +1,6 @@
 """缩量买入 + 止盈止损策略（backtrader）。
 
-由原 strategy/test1.py 迁移：策略逻辑未改动，仅把模块级执行包装为 run_backtest()。
-
-策略要点：
-    - 当日成交量低于 20 日均量的 40% 时买入
-    - 相对买入价下跌 5% 或上涨 30% 时卖出
-
-TODO(2.2): 原实现存在两个问题（保持原样迁移，未修改）：
-    1. log(self, str) 的参数名拼写错误且遮蔽内置 str
-    2. 第二次 self.order 判空后，buyprice 分支永远不会在同一天生效
+由原 strategy/test1.py 迁移；阶段 2.4 起支持参数化与成交记录。
 """
 
 from __future__ import annotations
@@ -20,12 +12,31 @@ import backtrader as bt
 import pandas as pd
 
 from quant.price.loader import get_stock_price
+from quant.strategy.runner import BacktestResult, benchmark_curve, build_cerebro, date_bounds, extract_result
 
 logger = logging.getLogger(__name__)
+
+#: 可在界面上调整的参数
+PARAMS_SPEC = [
+    {"name": "volume_ratio", "label": "缩量阈值", "type": "float", "default": 0.4,
+     "min": 0.05, "max": 1.0, "step": 0.05, "help": "当日量低于 N 倍均量时买入"},
+    {"name": "volume_ma", "label": "均量周期", "type": "int", "default": 20, "min": 3, "max": 120},
+    {"name": "stop_loss", "label": "止损比例", "type": "float", "default": 0.05,
+     "min": 0.01, "max": 0.5, "step": 0.01, "help": "相对买入价下跌该比例卖出"},
+    {"name": "take_profit", "label": "止盈比例", "type": "float", "default": 0.30,
+     "min": 0.05, "max": 2.0, "step": 0.05, "help": "相对买入价上涨该比例卖出"},
+]
 
 
 class VolumeBreakoutStrategy(bt.Strategy):
     """缩量买入策略（原名 MyStrategy）。"""
+
+    params = (
+        ("volume_ratio", 0.4),
+        ("volume_ma", 20),
+        ("stop_loss", 0.05),
+        ("take_profit", 0.30),
+    )
 
     def __init__(self):
         self.dataclose = self.datas[0].close
@@ -35,21 +46,22 @@ class VolumeBreakoutStrategy(bt.Strategy):
         self.order = None
         self.buyprice = None
         self.buycomm = None
+        self.trade_log: list[dict] = []
 
-        self.avg_volume = bt.indicators.SMA(self.datavolume, period=20)
+        self.avg_volume = bt.indicators.SMA(self.datavolume, period=self.p.volume_ma)
 
     def next(self):
         if self.order:
             return
 
-        if self.datavolume[0] < 0.4 * self.avg_volume[0]:
+        # 只在空仓时买入（原实现没有这个判断，配合百分比仓位会反复加仓并把现金打成负数）
+        if not self.position and self.datavolume[0] < self.p.volume_ratio * self.avg_volume[0]:
             self.order = self.buy()
-
-        if self.order:
             return
 
-        if self.buyprice is not None and (
-            self.dataclose[0] < self.buyprice * 0.95 or self.dataclose[0] > self.buyprice * 1.3
+        if self.position and self.buyprice is not None and (
+            self.dataclose[0] < self.buyprice * (1 - self.p.stop_loss)
+            or self.dataclose[0] > self.buyprice * (1 + self.p.take_profit)
         ):
             self.order = self.sell()
 
@@ -71,6 +83,14 @@ class VolumeBreakoutStrategy(bt.Strategy):
                     f"Cost: {order.executed.value:.2f}, Comm: {order.executed.comm:.2f}"
                 )
 
+            self.trade_log.append({
+                "date": self.data.datetime.date(0).isoformat(),
+                "side": "买入" if order.isbuy() else "卖出",
+                "price": round(float(order.executed.price), 4),
+                "size": float(order.executed.size),
+                "value": round(float(abs(order.executed.value)), 2),
+                "commission": round(float(order.executed.comm), 2),
+            })
             self.order = None
 
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
@@ -85,11 +105,32 @@ class VolumeBreakoutStrategy(bt.Strategy):
         logger.info("%s", text)
 
 
-def run_backtest(stock_id: str = "000002", fromdate: datetime | None = None, plot: bool = False):
-    """运行缩量买入策略回测。"""
+def run_backtest(
+    stock_id: str = "000001",
+    fromdate: datetime | None = None,
+    cash: float = 100000.0,
+    commission: float = 0.001,
+    plot: bool = False,
+    volume_ratio: float = 0.4,
+    volume_ma: int = 20,
+    stop_loss: float = 0.05,
+    take_profit: float = 0.30,
+) -> BacktestResult:
+    """运行缩量买入策略回测，返回统一结果对象。"""
     df = get_stock_price(stock_id)
+    if df.empty:
+        raise FileNotFoundError(f"{stock_id} 无日线数据，请先运行 quant update-price --stock {stock_id}")
+
+    params = {
+        "volume_ratio": float(volume_ratio),
+        "volume_ma": int(volume_ma),
+        "stop_loss": float(stop_loss),
+        "take_profit": float(take_profit),
+    }
+
     df = df.sort_values("date")
     df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
+    start_date = fromdate or datetime(2022, 1, 1)
 
     data = bt.feeds.PandasData(
         dataname=df,
@@ -99,13 +140,20 @@ def run_backtest(stock_id: str = "000002", fromdate: datetime | None = None, plo
         low="low",
         close="close",
         volume="volume",
-        fromdate=fromdate or datetime(2022, 1, 1),
+        fromdate=start_date,
     )
 
-    cerebro = bt.Cerebro()
-    cerebro.adddata(data)
-    cerebro.addstrategy(VolumeBreakoutStrategy)
-    cerebro.run()
+    cerebro = build_cerebro(cash=cash, commission=commission)
+    cerebro.adddata(data, name=stock_id)
+    cerebro.addstrategy(VolumeBreakoutStrategy, **params)
+
+    subset = df[df["date"] >= start_date]
+    start, end = date_bounds(subset)
+    result = extract_result(
+        cerebro, "volume_breakout", stock_id, cash, bars=len(subset), start=start, end=end,
+        params=params,
+        benchmark=benchmark_curve(subset, cash, price_column="close"),
+    )
 
     if plot:
         import matplotlib.pyplot as plt
@@ -114,11 +162,5 @@ def run_backtest(stock_id: str = "000002", fromdate: datetime | None = None, plo
         plt.rcParams.update({"font.size": 12})
         cerebro.plot(iplot=False)
 
-    return cerebro
-
-
-if __name__ == "__main__":  # pragma: no cover
-    from quant.config import setup_logging
-
-    setup_logging()
-    run_backtest(plot=True)
+    logger.info("\n%s", result.report())
+    return result

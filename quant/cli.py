@@ -14,10 +14,18 @@
     quant update-jibenmian            补齐缺失季度并摄入
     quant update-price                追加最新日线（默认增量）
     quant update-etf                  追加 ETF 日线
+    quant update-financial            更新财务指标（逐股，慢）
     quant update-all                  一键按顺序全部更新
     quant rebuild-growth              重算单季增长表
+    quant rebuild-ttm                 回填 fundamental 的 TTM 列
+    quant rebuild-valuation           重建估值历史分位表
 
     quant calc-growth                 导出单季增长 CSV（英文列名）
+
+    quant screen                      按过滤链选股（--list 查看可用过滤器）
+    quant backtest                    运行策略回测（--list 查看可用策略）
+
+    quant ui [symbol]                 启动桌面界面
 """
 
 from __future__ import annotations
@@ -28,7 +36,10 @@ import logging
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 from quant import config
+from quant import query as quant_query
 
 BASE_DEPS = [
     "akshare", "backtrader", "pandas", "numpy", "matplotlib", "scipy",
@@ -208,11 +219,12 @@ def cmd_update_price(args: argparse.Namespace) -> int:
 
     mode = "full" if args.full else args.mode
     result = update.update_price(
-        args.stock, mode=mode, start=args.start, limit=args.limit, delay=args.delay
+        args.stock, mode=mode, start=args.start, limit=args.limit,
+        delay=args.delay, workers=args.workers, timeout=args.timeout, source=args.source,
     )
     print("-" * 62)
     print(f"模式 {result['mode']}：处理 {result['symbols']} 只，更新 {result['updated']} 只，"
-          f"跳过 {result['skipped']} 只，新增 {result['rows']} 行")
+          f"跳过 {result['skipped']} 只，新增 {result['rows']:,} 行")
     if result["failures"]:
         print(f"失败 {len(result['failures'])} 只: {result['failures'][:10]}")
     return 0
@@ -224,6 +236,22 @@ def cmd_update_etf(args: argparse.Namespace) -> int:
     result = update.update_etf(args.symbol, start=args.start, end=args.end, delay=args.delay)
     print("-" * 62)
     print(f"ETF：处理 {result['symbols']} 只，更新 {result['updated']} 只，新增 {result['rows']} 行")
+    if result["failures"]:
+        print(f"失败 {len(result['failures'])} 只: {result['failures'][:10]}")
+    return 0
+
+
+def cmd_update_financial(args: argparse.Namespace) -> int:
+    from quant.data import update
+
+    result = update.update_financial(
+        args.stock, limit=args.limit, delay=args.delay,
+        workers=args.workers, timeout=args.timeout,
+        stale_days=args.stale_days, skip_unchanged=not args.force,
+    )
+    print("-" * 62)
+    print(f"财务指标：处理 {result['symbols']} 只，更新 {result['updated']} 只，"
+          f"跳过 {result['skipped']} 只，写入 {result['rows']} 行")
     if result["failures"]:
         print(f"失败 {len(result['failures'])} 只: {result['failures'][:10]}")
     return 0
@@ -249,6 +277,57 @@ def cmd_rebuild_growth(args: argparse.Namespace) -> int:
     print(f"单季增长表: {result.get('rows', 0)} 行 / {result.get('symbols', 0)} 只股票")
     if result.get("message"):
         print(result["message"])
+    return 0
+
+
+def cmd_ui(args: argparse.Namespace) -> int:
+    """启动桌面界面。"""
+    try:
+        import wx  # noqa: F401
+    except ImportError:
+        print("未安装 wxPython，无法启动桌面界面。")
+        print(r"安装： .venv\Scripts\python.exe -m pip install wxPython")
+        return 1
+
+    from quant.ui.app import run
+
+    argv = [args.symbol] if args.symbol else []
+    return run(argv)
+
+
+def cmd_rebuild_ttm(_args: argparse.Namespace) -> int:
+    """回填 fundamental 的 TTM 列（PS 需要）。"""
+    from quant.data import store
+    from quant.foundation.valuation import rebuild_fundamental_ttm
+
+    with store.open_db() as conn:
+        result = rebuild_fundamental_ttm(conn)
+    print("-" * 62)
+    print(f"TTM 回填：{result.get('rows', 0):,} 行 / {result.get('symbols', 0)} 只股票")
+    return 0
+
+
+def cmd_rebuild_valuation(args: argparse.Namespace) -> int:
+    """重建估值历史分位表。"""
+    from quant.data import store
+    from quant.foundation.valuation import rebuild_fundamental_ttm, rebuild_valuation
+
+    with store.open_db() as conn:
+        ttm = rebuild_fundamental_ttm(conn)
+        print(f"TTM 回填：{ttm.get('rows', 0):,} 行")
+        result = rebuild_valuation(
+            args.stock,
+            windows=tuple(args.windows),
+            limit=args.limit,
+            workers=args.workers,
+            conn=conn,
+        )
+
+    print("-" * 62)
+    print(f"估值分位：{result['symbols']} 只股票，写入 {result['rows']:,} 行，"
+          f"用时 {result['elapsed_seconds']:.0f}s")
+    if result["failures"]:
+        print(f"失败 {len(result['failures'])} 只: {result['failures'][:10]}")
     return 0
 
 
@@ -286,6 +365,106 @@ def cmd_calc_growth(args: argparse.Namespace) -> int:
     df.to_csv(out, index=False, encoding="utf_8_sig")
     seasons = df["season"].nunique() if "season" in df.columns else "?"
     print(f"已导出 {out} ({len(df)} 行, {seasons} 个季度)")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# 选股与回测
+# --------------------------------------------------------------------------
+def cmd_screen(args: argparse.Namespace) -> int:
+    """按过滤链选股。"""
+    from quant.filter import FilterChain, FilterContext, describe_filters
+
+    if args.list:
+        print("可用过滤器：")
+        for name, description in describe_filters():
+            print(f"  {name:<16} {description}")
+        print("\n用法示例： quant screen --filter exclude_st --filter market_cap:max=80 "
+              "--filter growth:min=30")
+        return 0
+
+    if not args.filter:
+        print("没有指定 --filter，将输出全市场快照（可用 --limit 限制行数）")
+
+    chain = FilterChain.from_specs(args.filter or [])
+    as_of = int(args.as_of) if args.as_of else None
+
+    with FilterContext(as_of=as_of) as ctx:
+        if as_of is None:
+            ctx.as_of = int(quant_query.latest_trading_date(ctx.conn).replace("-", ""))
+        result = chain.run(ctx)
+        as_of = ctx.as_of
+
+    if not args.filter:
+        result = type(result)(frame=result.frame, steps=result.steps, as_of=as_of)
+
+    print(result.report())
+
+    frame = result.frame
+    if args.sort and args.sort in frame.columns:
+        frame = frame.sort_values(args.sort, ascending=args.ascending)
+    if args.limit:
+        frame = frame.head(args.limit)
+
+    columns = args.columns or ["symbol", "name", "close_org", "market_cap", "pe", "pb"]
+    columns = [c for c in columns if c in frame.columns]
+    preview = frame.loc[:, columns] if columns else frame
+
+    if args.display_columns:
+        from quant.data import schema
+
+        preview = schema.rename_for_display(preview)
+
+    pd.set_option("display.width", 220)
+    pd.set_option("display.max_columns", 50)
+    print()
+    if len(preview):
+        print(preview.to_string(index=False))
+    else:
+        print("（没有符合条件的股票）")
+
+    if args.out:
+        out = Path(args.out)
+        frame.to_csv(out, index=False, encoding="utf_8_sig")
+        print(f"\n已导出 {out}（{len(frame)} 行）")
+    return 0
+
+
+def cmd_backtest(args: argparse.Namespace) -> int:
+    """运行策略回测。"""
+    from quant.strategy import default_params, get_strategy, list_strategies, run_backtest
+
+    if args.list:
+        print("可用策略：")
+        for info in list_strategies():
+            print(f"  {info.name:<18} 默认标的 {info.default_symbol:<8} {info.description}")
+            for param in info.params:
+                print(f"      --{param['name']:<14} {param.get('label', '')} "
+                      f"(默认 {param.get('default')})")
+        return 0
+
+    if not args.strategy:
+        print("请用 --strategy 指定策略（或用 --list 查看全部）")
+        return 1
+
+    # 未显式给出的参数用策略默认值
+    info = get_strategy(args.strategy)
+    params = default_params(args.strategy)
+    for param in info.params:
+        value = getattr(args, param["name"], None)
+        if value is not None:
+            params[param["name"]] = value
+
+    result = run_backtest(
+        args.strategy,
+        symbol=args.symbol,
+        cash=args.cash,
+        commission=args.commission,
+        plot=args.plot,
+        **params,
+    )
+    print()
+    print(result.report())
     return 0
 
 
@@ -328,6 +507,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--full", action="store_true", help="等同于 --mode full")
     p.add_argument("--start", default="20100101", help="full 模式或首次入库的起始日期")
     p.add_argument("--delay", type=float, default=0.3, help="每只股票请求间隔秒数")
+    p.add_argument("--workers", type=int, default=4, help="并发抓取线程数（写库仍是单线程）")
+    p.add_argument("--timeout", type=float, default=40.0, help="单次请求 socket 超时（秒）")
+    p.add_argument("--source", choices=["auto", "eastmoney", "sina"], default="auto",
+                   help="数据源：auto 先试东财、失败自动改用新浪")
     p.set_defaults(func=cmd_update_price)
 
     p = sub.add_parser("update-etf", help="追加 ETF 日线")
@@ -336,6 +519,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--end", default=None)
     p.add_argument("--delay", type=float, default=0.3)
     p.set_defaults(func=cmd_update_etf)
+
+    p = sub.add_parser("update-financial", help="更新财务指标（逐股，较慢，建议后台跑）")
+    p.add_argument("--stock", nargs="+", default=None, help="指定股票代码，缺省为股票列表全部")
+    p.add_argument("--limit", type=int, default=None, help="只处理前 N 只（试跑用）")
+    p.add_argument("--delay", type=float, default=0.2, help="每只股票请求间隔秒数")
+    p.add_argument("--workers", type=int, default=3, help="并发抓取线程数（写库仍是单线程，建议不超过 4）")
+    p.add_argument("--timeout", type=float, default=40.0, help="单次请求的 socket 超时（秒）")
+    p.add_argument("--stale-days", type=int, default=None,
+                   help="只更新「最新报告期早于 N 天前或没有数据」的股票（推荐日常增量用）")
+    p.add_argument("--force", action="store_true", help="即使库中已是最新报告期也重写")
+    p.set_defaults(func=cmd_update_financial)
 
     p = sub.add_parser("update-all", help="一键更新（基本面 -> 增长 -> 日线 -> ETF）")
     p.add_argument("--price-limit", type=int, default=None)
@@ -346,6 +540,52 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--only-complete", action="store_true",
                    help="只保留所有季度都完整的股票（默认全市场，缺失季度留空）")
     p.set_defaults(func=cmd_rebuild_growth)
+
+    # --- 选股 / 回测 ---
+    p = sub.add_parser("screen", help="按过滤链选股")
+    p.add_argument("--filter", action="append", default=[],
+                   help="过滤器，格式 name 或 name:k=v,k=v，可重复，例如 "
+                        "market_cap:max=80  growth:field=season_income_growth,min=30")
+    p.add_argument("--as-of", default=None, help="快照日期 YYYYMMDD，缺省用库中最新交易日")
+    p.add_argument("--sort", default=None, help="按某列排序")
+    p.add_argument("--asc", dest="ascending", action="store_true", help="升序（默认降序）")
+    p.add_argument("--limit", type=int, default=20, help="只打印前 N 行（默认 20，0 表示全部）")
+    p.add_argument("--columns", nargs="+", default=None, help="打印哪些列")
+    p.add_argument("--display-columns", action="store_true", help="列名用中文展示名")
+    p.add_argument("--out", default=None, help="导出 CSV 路径")
+    p.add_argument("--list", action="store_true", help="列出所有可用过滤器")
+    p.set_defaults(func=cmd_screen)
+
+    p = sub.add_parser("backtest", help="运行策略回测")
+    p.add_argument("--strategy", default=None, help="策略名（--list 查看）")
+    p.add_argument("--symbol", default=None, help="标的代码，缺省用策略默认标的")
+    p.add_argument("--cash", type=float, default=100000.0, help="初始资金")
+    p.add_argument("--commission", type=float, default=0.001, help="手续费率")
+    p.add_argument("--plot", action="store_true", help="回测结束后画图")
+    p.add_argument("--list", action="store_true", help="列出所有可用策略")
+    # 各策略的参数（不传则用策略默认值）
+    p.add_argument("--ma-period", type=int, default=None, help="ma_obv: 均线周期")
+    p.add_argument("--obv-period", type=int, default=None, help="ma_obv: OBV 周期")
+    p.add_argument("--volume-ratio", type=float, default=None, help="volume_breakout: 缩量阈值")
+    p.add_argument("--volume-ma", type=int, default=None, help="volume_breakout: 均量周期")
+    p.add_argument("--stop-loss", type=float, default=None, help="volume_breakout: 止损比例")
+    p.add_argument("--take-profit", type=float, default=None, help="volume_breakout: 止盈比例")
+    p.set_defaults(func=cmd_backtest)
+
+    p = sub.add_parser("ui", help="启动桌面界面（需要 wxPython）")
+    p.add_argument("symbol", nargs="?", default=None, help="可选：直接打开某只股票")
+    p.set_defaults(func=cmd_ui)
+
+    p = sub.add_parser("rebuild-ttm", help="回填 fundamental 的 TTM 列（PS 依赖）")
+    p.set_defaults(func=cmd_rebuild_ttm)
+
+    p = sub.add_parser("rebuild-valuation", help="重建估值历史分位表（PE/PB/PS 分位）")
+    p.add_argument("--windows", nargs="+", type=int, default=[3, 5, 10, 0],
+                   help="窗口年数，0 表示全部可得历史（默认 3 5 10 0）")
+    p.add_argument("--stock", nargs="+", default=None, help="只算指定股票")
+    p.add_argument("--limit", type=int, default=None, help="只算前 N 只（试跑用）")
+    p.add_argument("--workers", type=int, default=4, help="并发计算线程数")
+    p.set_defaults(func=cmd_rebuild_valuation)
 
     p = sub.add_parser("calc-growth", help="导出单季增长 CSV（与旧 calc_a_growth 同口径）")
     p.add_argument("--from-year", type=int, default=2021)

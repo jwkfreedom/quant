@@ -577,6 +577,226 @@ Remove-Item -Recurse -Force .\data\a
 
 ---
 
-*本文档随重构进展更新。阶段 1 分析结论已冻结；2.1 见第 9 节，2.2 见第 10 节。*
+## 11. 阶段 2.3 完成记录（主要功能接口）
+
+### 11.1 新增模块
+
+| 文件 | 职责 |
+|---|---|
+| `quant/query.py` | 统一查询 API：`snapshot()` 横截面快照、`prices()` / `price_wide()` / `price_history()`、`fundamentals()` / `growth()` / `financial()`、`universe()`、`summary()` |
+| `quant/filter/base.py` | Filter 协议、FilterContext（快照与历史的查询缓存）、注册表 |
+| `quant/filter/builtin.py` | 14 个内置过滤器（见 11.3） |
+| `quant/filter/chain.py` | FilterChain（记录每一步剩余数量）、ScreenResult、`name:k=v` 描述解析 |
+| `quant/strategy/runner.py` | cerebro 统一装配（资金/手续费/**仓位 sizer**/分析器）、BacktestResult、指标提取 |
+| `quant/data/frames.py:prepare_financial_frame` | 财务数据入库唯一入口（含 TTM 计算） |
+
+### 11.2 新增命令
+
+```
+quant screen [--filter SPEC ...] [--as-of] [--sort] [--limit] [--columns] [--display-columns] [--out] [--list]
+quant backtest --strategy NAME [--symbol] [--cash] [--commission] [--plot] [--list]
+quant update-financial [--stock ...] [--limit] [--workers] [--delay] [--force]
+```
+
+### 11.3 内置过滤器
+
+`exclude_st`、`min_listing`、`market_cap`、`pe`、`pb`、`roe`、`debt_ratio`、
+`growth`、`turnover_rate`、`price_change`、`price_range`、`ma_trend`、`ma_cross`、`volume_ratio`。
+
+写自定义过滤器只需实现 `apply(df, ctx)` 并 `@register`，即可在命令行用 `--filter 名字:参数` 引用。
+详见 [filter_guide.md](filter_guide.md)。
+
+### 11.4 修复的问题
+
+| 位置 | 问题 | 处理 |
+|---|---|---|
+| `query._read_sql` | dict 参数被 `list()` 转成键名列表，命名占位符全部绑错（`snapshot(as_of=...)` 实际没生效） | 单测发现；dict 原样传给 pandas |
+| `FilterContext.history` | 全表窗口函数排序 1000 万行（20~28 秒/次） | 改为「按每只股票自己的最后交易日回推区间 + 临时表 join」，21 根约 0.5~12 秒且只查一次 |
+| `FilterContext.history` | 列名与 `daily_price` 不一致（`close_org`） | 统一成 loader 口径：`close` 前复权、`close_org` 不复权 |
+| `MyOBV` | 指标从未初始化（首值 NaN），策略一笔都不买 | 加 `nextstart()`，OBV 从 0 起算 |
+| `build_cerebro` | 没设 sizer，backtrader 默认每次买 1 股，回测结果恒等于初始资金 | 统一 `PercentSizer(95)` |
+| `VolumeBreakoutStrategy` | 买入前不判断是否已持仓，配合百分比仓位会把现金打成深负数 | 加持仓判断 |
+| `extract_result` | 回撤取自不存在的字段，恒为 0 | 改用 `drawdown.get_analysis()["max"]` |
+
+### 11.5 示例 notebook
+
+`notebooks/` 下三个可直接运行的示例（**已用脚本逐个执行验证通过**）：
+
+| 文件 | 内容 |
+|---|---|
+| `01_数据总览.ipynb` | 数据概况、全市场快照、市值分布、单股日线与 PE、基本面时序 |
+| `02_选股示例.ipynb` | 过滤链（字符串/对象两种写法）、自定义过滤器、导出 |
+| `03_回测示例.ipynb` | 策略列表、两个策略回测、批量对比 |
+
+### 11.6 验证
+
+| 项目 | 结果 |
+|---|---|
+| 单测 | **109 passed**（新增 query / filter / strategy / 回测冒烟 共 40+ 条） |
+| notebook | 3 个 notebook 的全部代码单元执行成功 |
+| `quant screen` | 实跑：4925 → 4660 → 4578 → 324 → 185 只，各步剔除数与结果表正常 |
+| `quant backtest` | 实跑：ma_obv(512480/159611/510880)、volume_breakout(000001/600519) 均输出收益/回撤/交易次数/胜率 |
+| `quant update-financial` | 逐股增量更新，并发抓取 + 单线程写库（后台运行中） |
+
+### 11.7 已知限制
+
+1. `financial_indicator` 的更新是逐股请求（约 5000 只，单只约 2.6 秒；
+   `--workers 6` 约 1.3 秒/只），完整跑一轮 **约 2 小时**。已在后台执行：
+
+   ```bat
+   .venv\Scripts\python.exe -m quant update-financial --workers 6 --delay 0
+   ```
+
+   实测：`--workers 6` 时 100 只 / 135 秒（约 1.35 秒/只）。
+   每 100 只提交一次，可以随时中断、重跑（`skip_unchanged` 会跳过已是最新报告期的股票）。
+   未更新到的股票 PE/PB 为 NaN（选股时会被 `pe`/`pb` 过滤器剔除）。
+
+   注意进度不能看「有 TTM 的股票数」——已经是最新报告期的股票会被跳过、不产生变化；
+   要看日志里的 `财务指标进度 N/总数`。
+
+   首次全量跑完后发现一个坑：akshare 的 `stock_financial_analysis_indicator` 会按年份
+   逐年请求，**起始年份给太早（2000）时部分股票会整体返回空表**
+   （实测 002415、300750 返回 0 行，000001 正常）。已在 `fetch_financial` 里加了
+   起始年份回退阶梯（2010 -> 2015 -> 2020），并对空结果告警。
+
+   日常增量用 **`--stale-days`** 只更新过期标的，不必每次遍历全市场：
+
+   ```bat
+   .venv\Scripts\python.exe -m quant update-financial --stale-days 180 --workers 4 --delay 0.2
+   ```
+
+   **最终结果**（`--stale-days 180 --workers 4 --delay 0.2`，4249 只，用时 59 分钟）：
+
+   | 项 | 结果 |
+   |---|---|
+   | 处理 / 更新 / 跳过 | 4249 / **4150** / 99（无数据的退市股） |
+   | 写入行数 | 154,820 |
+   | `financial_indicator` 总量 | **299,428 行 / 5,317 只股票** |
+   | 最新报告期 | 2026-09-30 |
+   | 快照 PE / PB 覆盖率 | **4921 / 4925 (99.9%)**（此前只有 105 只） |
+
+### 11.8 全链路实测（数据补全后）
+
+```bat
+quant screen --filter exclude_st --filter min_listing:bars=250 ^
+             --filter market_cap:max=300 --filter pe:min=0,max=20 --filter roe:min=10
+```
+
+```
+初始股票池  4925 -> exclude_st 4660 -> min_listing 4578 -> market_cap 4055 -> pe 727 -> roe 118
+```
+2. `snapshot(as_of)` 的季度上限沿用项目既有口径 `get_season_iDATE`（报告期 ≤ 快照日），
+   对年初的日期存在「年报尚未披露但已被使用」的前视偏差，与重构前行为一致。
+3. `FilterContext.history()` 首次查询约 10 秒（1000 万行上做区间扫描），同一次选股内走缓存。
+
+---
+
+## 12. 阶段 2.4 记录（桌面界面 + 估值历史分位）
+
+### 12.1 需求确认（用户答复「按默认」）
+
+| 项 | 决定 |
+|---|---|
+| UI 技术栈 | **wxPython 4.2.3** + matplotlib（已安装，无需新依赖） |
+| 分位口径 | 剔除 PE ≤ 0 的交易日；**按每个交易日**计算；窗口 3/5/10 年 + 全历史，默认 10 年 |
+| 数据准备 | 开发前先补基本面到最新季度 |
+| PS 口径 | 总市值 ÷ 营业总收入(TTM) |
+| 回测范围 | 第一版只支持单标的 |
+| 方案保存 | 项目内 `config/screens/*.json` |
+| 导出 | CSV 为主，同时支持 Excel（openpyxl） |
+| 一键更新 | 做，带确认对话框并在后台线程执行 |
+
+> 约束：本环境无显示，**看不到窗口**。因此 UI 拆成「视图模型层（纯 pandas，可无头单测）+
+> wx 视图层（薄）」，功能正确性由 pytest 保证，外观需用户本地验证。
+
+### 12.2 底层能力（2.4.0）
+
+| 新增 | 说明 |
+|---|---|
+| `valuation_percentile` 表 | 一行一只股票 × 一个窗口，约 1.5 万行（不是 1000 万行的逐日大表） |
+| `quant/foundation/valuation.py` | 逐日估值序列（`compute_symbol_valuation`）与分位计算（`compute_percentiles`） |
+| `quant rebuild-valuation` | 批量重建分位表（多线程读、单线程写，可中断续跑） |
+| `quant rebuild-ttm` | 回填 `fundamental.revenue_ttm / net_profit_ttm`（PS 依赖） |
+| schema v2 | `ensure_schema()` 自动 `ALTER TABLE` 补列，老库无缝升级 |
+| 新过滤器 | `pe_percentile` / `pb_percentile` / `ps_percentile` / `ps` / `break_ma` / `ma_align` / `gross_margin` |
+| 快照新列 | `ps`、`pe_pct_3y/5y/10y/all`、`pb_pct_10y`、`ps_pct_10y`、`revenue_ttm`、`net_profit_ttm` |
+| 回测增强 | 净值曲线、买入持有基准、年化收益、夏普、成交明细、策略参数化（`PARAMS_SPEC` / `StrategyInfo`） |
+| 数据源回退 | 东财被限流时自动改用新浪（`fetch_price_sina`），并可 `--source` 指定 |
+
+**分位口径**（用户确认）：
+`PE_t = 不复权收盘价 ÷ 当期已披露的 EPS_TTM`，
+分位 = 窗口内 `PE < PE_t` 的交易日占比；剔除 `PE ≤ 0`（亏损期）与指标缺失的交易日。
+
+### 12.3 界面（2.4.1）
+
+`quant/ui/`：
+
+| 文件 | 职责 |
+|---|---|
+| `viewmodels.py` | 数据总览状态、表浏览器分页查询、导出、选股、方案存取、个股数据包、回测转发 |
+| `charts.py` | K线、估值带、财务、估值历史、净值曲线、市值/PE 分布（纯 Figure，无 GUI 依赖） |
+| `widgets.py` | DataFrameGrid、FigurePanel、MetricCards、BusyRunner（后台任务）、导出对话框 |
+| `screens/` | dashboard / screener / stock_detail / backtest / explorer / settings |
+| `app.py` | 主窗口（左侧导航）+ 菜单 + 状态栏 |
+
+启动：`scripts\run_ui.bat` 或 `python -m quant ui [symbol]`。
+
+### 12.4 数据现状（2.4 完成后）
+
+| 表 | 行数 | 覆盖 |
+|---|---|---|
+| `daily_price` | 13,814,214 | 5,322 只，2010-01-04 ~ **2026-10-14** |
+| `fundamental` | 251,837 | 5,384 只 × 66 个季度，20100331 ~ **20260630** |
+| `fundamental_growth` | 251,837 | 同步重建到 2026Q2 |
+| `financial_indicator` | 299,428 | 5,317 只，最新报告期 2026-09-30 |
+| `valuation_percentile` | 21,128 | **5,322 只 × 4 个窗口** |
+| `etf_daily` | 45,074 | 62 只 ETF |
+
+快照覆盖率（`quant check` / `query.snapshot()`）：
+
+| 字段 | 非空 |
+|---|---|
+| `market_cap` / `pe` / `pb` | 5,276 / 5,278 / 5,278 |
+| `ps` | 5,260 |
+| `pe_pct_10y`（3y/5y/all 同） | 3,614（其余为历史不足或长期亏损被剔除） |
+| `pb_pct_10y` / `ps_pct_10y` | 5,127 / 5,133 |
+| `roe` / `debt_ratio` | 5,175 / 5,322 |
+
+PE 十年分位分布：≤10% 有 **605 只**，≤20% 有 924 只，中位数 53.1。
+
+### 12.5 验证
+
+| 项目 | 结果 |
+|---|---|
+| 单测 | **161 passed**（新增 valuation / runner / viewmodels / ui 冒烟 共 50+ 条） |
+| notebook | 3 个示例 notebook 全部代码单元执行通过（已适配新 API） |
+| 编译检查 | `python -m compileall quant/ui` 通过 |
+| 模块导入 | `quant.ui.app` 导入成功，6 个页面类均可解析 |
+| **无头构造** | 真实创建 `MainFrame`：6 个页面、21 个条件行、个股渲染、参数表单、页面切换全通过（`tests/test_ui_frame.py`，9 条） |
+| **wx API 静态检查** | AST 扫描源码里所有 `wx.<Name>`，逐个核对是否存在（`tests/test_wx_api.py`，14 条） |
+| 图表 | 7 类图形对真实数据与空数据都能正常构建 |
+| 实跑 | `quant rebuild-valuation`、`quant screen`（含 PE 分位）、`quant backtest`（含参数）均验证通过 |
+
+### 12.6 遗留与注意
+
+1. **行情数据源**：东财（`stock_zh_a_hist`）在一次高并发全量更新后被限流，已改用新浪接口补齐
+   （`fetch_price_sina`）。2023-12 以前的数据来自东财、之后来自新浪，**不复权价完全一致**
+   （估值不受影响），**前复权序列在衔接处可能有极小台阶**（技术指标/回测跨该日时留意）。
+2. **界面外观未验证**：需要用户本地运行确认布局与交互。
+   已用「无头构造 + wx API 静态检查」把**代码级**问题提前拦住，
+   首轮运行前就修掉了 6 个必然崩溃的问题：
+   `wx.ListBook` 拼写（应为 `Listbook`）、页面早于状态栏创建、
+   垂直 BoxSizer 使用 `ALIGN_CENTER_VERTICAL`、`StaticBoxSizer` 父窗口与面板不一致、
+   `TextCtrl` 不支持 `hint` 参数、`Grid.SetAlternateRowColour` 不存在、
+   绑定 `EVT_TEXT_ENTER` 缺少 `wx.TE_PROCESS_ENTER` 样式。
+3. **PE/PB 分位需先跑 `rebuild-valuation`**，否则相关过滤器会提示缺列。
+4. 未做：实盘对接、组合回测、定时任务。
+5. 六个页面都已实现第一版（超出原计划的 2.4.1 范围），后续按用户反馈迭代外观与交互。
+6. 全市场行情补齐时发现东财限流后，尾部约 88 只（退市/无数据）在反复重试中被手动中止；
+   其余 5,146 只已更新到 2026-10-14。
+
+---
+
+*本文档随重构进展更新。阶段 1 分析结论已冻结；2.1 见第 9 节，2.2 见第 10 节，2.3 见第 11 节，2.4 见第 12 节。*
 
 

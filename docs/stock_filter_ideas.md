@@ -1,8 +1,25 @@
 # 选股过滤条件（需求备忘）
 
 > 来源：重构前的 `trade/stockfilter.md`，原样保留。
-> 按项目决策，这两条**暂不实现**；但阶段 2.3 要提供**可插拔的过滤器框架**，
-> 之后新增类似条件只需实现一个 `Filter` 并注册（见 `quant/filter/__init__.py`）。
+>
+> **阶段 2.3 已实现可插拔过滤器框架**（`quant/filter/`，命令行 `quant screen`），
+> 下面是这两条条件的对应写法；实际使用时按需微调参数。
+> 用法见 [filter_guide.md](filter_guide.md)。
+
+```python
+from quant.filter import FilterChain, FilterContext
+
+with FilterContext() as ctx:
+    result = FilterChain.from_specs([
+        # 条件 2：最近 5 日最高/最低价差 < 5%；市值 < 80 亿；今日涨幅 < 1%
+        "price_range:bars=5,max=5",
+        "market_cap:max=80",
+        "price_change:bars=1,max=1",
+        # 条件 1：最近 20 日涨幅 > 10%
+        "price_change:bars=20,min=10",
+    ]).run(ctx)
+print(result.report())
+```
 
 ## 原始条件
 

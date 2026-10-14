@@ -19,7 +19,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # --------------------------------------------------------------------------
 # 表名
@@ -32,6 +32,7 @@ TABLE_FUNDAMENTAL = "fundamental"
 TABLE_FUNDAMENTAL_GROWTH = "fundamental_growth"
 TABLE_FINANCIAL = "financial_indicator"
 TABLE_TRADE_RECORD = "trade_record"
+TABLE_VALUATION_PERCENTILE = "valuation_percentile"
 
 ALL_TABLES = (
     TABLE_META,
@@ -42,7 +43,32 @@ ALL_TABLES = (
     TABLE_FUNDAMENTAL_GROWTH,
     TABLE_FINANCIAL,
     TABLE_TRADE_RECORD,
+    TABLE_VALUATION_PERCENTILE,
 )
+
+# --------------------------------------------------------------------------
+# 估值历史分位
+# --------------------------------------------------------------------------
+#: 计算分位的窗口（年）；0 表示「全部可得历史」
+VALUATION_WINDOWS: tuple[int, ...] = (3, 5, 10, 0)
+
+#: 默认展示/筛选用的窗口
+DEFAULT_VALUATION_WINDOW = 10
+
+#: valuation_percentile 表列（除主键 symbol/window_years）
+VALUATION_PERCENTILE_COLUMNS: tuple[str, ...] = (
+    "as_of", "current_pe", "current_pb", "current_ps",
+    "pe_pct", "pb_pct", "ps_pct",
+    "sample_days", "window_start", "window_years_actual", "computed_at",
+)
+
+#: 快照里附带的分位列：窗口 -> 列名
+VALUATION_PERCENTILE_FIELDS: dict[int, str] = {
+    3: "pe_pct_3y",
+    5: "pe_pct_5y",
+    10: "pe_pct_10y",
+    0: "pe_pct_all",
+}
 
 # --------------------------------------------------------------------------
 # 价格
@@ -167,6 +193,8 @@ FUNDAMENTAL_NUMERIC_COLUMNS: tuple[str, ...] = (
     "operating_cash_flow", "operating_cash_flow_ratio",
     "investing_cash_flow", "investing_cash_flow_ratio",
     "financing_cash_flow", "financing_cash_flow_ratio",
+    # 滚动四季度（TTM，由 rebuild-fundamental-ttm 计算）
+    "revenue_ttm", "net_profit_ttm",
 )
 
 #: fundamental 表全部业务列（除主键 symbol/season）
@@ -294,7 +322,15 @@ DISPLAY_NAMES: dict[str, str] = {
     "receivable_turnover": "应收账款周转率", "inventory_turnover": "存货周转率",
     "asset_turnover": "总资产周转率",
     "eps_ttm": "每股收益(TTM)", "bvps_ttm": "每股净资产(TTM)",
-    "pe": "市盈率", "pb": "市净率",
+    "revenue_ttm": "营业总收入(TTM)", "net_profit_ttm": "净利润(TTM)",
+    "pe": "市盈率", "pb": "市净率", "ps": "市销率",
+    # 估值历史分位
+    "pe_pct_3y": "PE分位(3年)", "pe_pct_5y": "PE分位(5年)",
+    "pe_pct_10y": "PE分位(10年)", "pe_pct_all": "PE分位(全历史)",
+    "pb_pct_10y": "PB分位(10年)", "ps_pct_10y": "PS分位(10年)",
+    "current_pe": "当前PE", "current_pb": "当前PB", "current_ps": "当前PS",
+    "sample_days": "样本交易日数", "window_start": "窗口起点",
+    "as_of": "基准日", "window_years": "窗口(年)",
 }
 
 

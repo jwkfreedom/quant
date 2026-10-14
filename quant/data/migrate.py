@@ -216,20 +216,10 @@ def migrate_financial(conn: sqlite3.Connection, src_dir: Path | None = None, *, 
     for index, path in enumerate(files, 1):
         symbol = path.stem.replace("financial_report_", "")
         try:
-            df = pd.read_csv(path).rename(columns=schema.FINANCIAL_COLUMN_MAP)
-            if "report_date" not in df.columns:
+            frame = frames.prepare_financial_frame(pd.read_csv(path), symbol)
+            if frame.empty:
                 continue
-            keep = [c for c in schema.FINANCIAL_COLUMN_MAP.values() if c in df.columns]
-            df = df.loc[:, keep]
-            df["report_date"] = df["report_date"].astype(str)
-            df = df[df["report_date"].str.match(r"\d{4}-\d{2}-\d{2}", na=False)]
-            df = df.drop_duplicates(subset=["report_date"], keep="last").sort_values("report_date")
-
-            df["symbol"] = symbol
-            df["idate"] = df["report_date"].str.replace("-", "").astype("int64")
-            df = _to_numeric(df, [c for c in schema.FINANCIAL_COLUMN_MAP.values() if c != "report_date"])
-
-            total_rows += store.write_financial(conn, df)
+            total_rows += store.write_financial(conn, frame)
         except Exception:
             failures.append(symbol)
             logger.exception("迁移财务指标失败: %s", symbol)

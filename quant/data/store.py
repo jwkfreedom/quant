@@ -89,6 +89,23 @@ CREATE TABLE IF NOT EXISTS {schema.TABLE_TRADE_RECORD} (
     filter_type INTEGER,
     note TEXT
 );
+
+CREATE TABLE IF NOT EXISTS {schema.TABLE_VALUATION_PERCENTILE} (
+    symbol              TEXT    NOT NULL,
+    window_years        INTEGER NOT NULL,   -- 0 表示全部可得历史
+    as_of               TEXT,
+    current_pe          REAL,
+    current_pb          REAL,
+    current_ps          REAL,
+    pe_pct              REAL,
+    pb_pct              REAL,
+    ps_pct              REAL,
+    sample_days         INTEGER,
+    window_start        TEXT,
+    window_years_actual REAL,
+    computed_at         TEXT,
+    PRIMARY KEY (symbol, window_years)
+) WITHOUT ROWID;
 """
 
 _INDEXES = f"""
@@ -96,7 +113,16 @@ CREATE INDEX IF NOT EXISTS idx_daily_price_idate ON {schema.TABLE_DAILY_PRICE} (
 CREATE INDEX IF NOT EXISTS idx_fundamental_season ON {schema.TABLE_FUNDAMENTAL} (season);
 CREATE INDEX IF NOT EXISTS idx_growth_season ON {schema.TABLE_FUNDAMENTAL_GROWTH} (season);
 CREATE INDEX IF NOT EXISTS idx_financial_idate ON {schema.TABLE_FINANCIAL} (idate);
+CREATE INDEX IF NOT EXISTS idx_valuation_window ON {schema.TABLE_VALUATION_PERCENTILE} (window_years);
 """
+
+#: 后续版本给已有表新增的列（表 -> {列名: 列类型}），由 ensure_schema 自动 ALTER
+_ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    schema.TABLE_FUNDAMENTAL: {
+        "revenue_ttm": "REAL",
+        "net_profit_ttm": "REAL",
+    },
+}
 
 
 # --------------------------------------------------------------------------
@@ -113,6 +139,9 @@ def connect(db_path: Path | None = None, *, create: bool = False) -> sqlite3.Con
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    # 多个任务（更新行情 / 重建分位 / 界面查询）可能同时写库，
+    # 给写入等待设个上限，避免直接抛 "database is locked"。
+    conn.execute("PRAGMA busy_timeout=60000")
     return conn
 
 
@@ -126,26 +155,50 @@ def open_db(db_path: Path | None = None, *, create: bool = False):
         conn.close()
 
 
+def ensure_schema(conn: sqlite3.Connection) -> list[str]:
+    """建表 + 为已有表补齐新版本的列（幂等）。
+
+    返回本次实际执行的变更列表，例如 `['fundamental.revenue_ttm']`。
+    """
+    changes: list[str] = []
+    conn.executescript(_DDL)
+
+    for table, columns in _ADDED_COLUMNS.items():
+        if not table_exists(conn, table):
+            continue
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, ddl_type in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl_type}")
+                changes.append(f"{table}.{name}")
+
+    conn.execute(
+        f"INSERT INTO {schema.TABLE_META} (key, value) VALUES (?, ?) "
+        f"ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        ("schema_version", str(schema.SCHEMA_VERSION)),
+    )
+    conn.commit()
+    return changes
+
+
 def init_db(db_path: Path | None = None, *, with_indexes: bool = True) -> Path:
-    """建表（幂等），返回数据库路径。"""
+    """建表 / 升级表结构（幂等），返回数据库路径。"""
     path = Path(db_path) if db_path is not None else DB_PATH
     with open_db(path, create=True) as conn:
-        conn.executescript(_DDL)
+        changes = ensure_schema(conn)
+        if changes:
+            logger.info("表结构升级: %s", ", ".join(changes))
         if with_indexes:
             conn.executescript(_INDEXES)
-        conn.execute(
-            f"INSERT INTO {schema.TABLE_META} (key, value) VALUES (?, ?) "
-            f"ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            ("schema_version", str(schema.SCHEMA_VERSION)),
-        )
-        conn.commit()
+            conn.commit()
     logger.info("数据库就绪: %s", path)
     return path
 
 
 def drop_indexes(conn: sqlite3.Connection) -> None:
     """批量导入前删除索引（导入完成后重建）。"""
-    for name in ("idx_daily_price_idate", "idx_fundamental_season", "idx_growth_season", "idx_financial_idate"):
+    for name in ("idx_daily_price_idate", "idx_fundamental_season", "idx_growth_season",
+                 "idx_financial_idate", "idx_valuation_window"):
         conn.execute(f"DROP INDEX IF EXISTS {name}")
     conn.commit()
 
@@ -325,6 +378,55 @@ def read_financial(conn: sqlite3.Connection, symbol: str) -> pd.DataFrame:
     """读取单只股票的财务指标（按报告期升序）。"""
     sql = f"SELECT * FROM {schema.TABLE_FINANCIAL} WHERE symbol = ? ORDER BY report_date"
     return pd.read_sql_query(sql, conn, params=[symbol])
+
+
+def write_valuation_percentile(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
+    """写入估值分位表。"""
+    return _insert_frame(
+        conn, schema.TABLE_VALUATION_PERCENTILE, df,
+        ("symbol", "window_years", *schema.VALUATION_PERCENTILE_COLUMNS),
+    )
+
+
+def read_valuation_percentile(
+    conn: sqlite3.Connection,
+    window_years: int | None = None,
+    symbols: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """读取估值分位表。"""
+    sql = f"SELECT * FROM {schema.TABLE_VALUATION_PERCENTILE} WHERE 1=1"
+    params: list = []
+    if window_years is not None:
+        sql += " AND window_years = ?"
+        params.append(int(window_years))
+    if symbols is not None:
+        symbols = [str(s).zfill(6) for s in symbols]
+        if not symbols:
+            return pd.DataFrame()
+        sql += f" AND symbol IN ({', '.join('?' for _ in symbols)})"
+        params.extend(symbols)
+    sql += " ORDER BY symbol, window_years"
+    return pd.read_sql_query(sql, conn, params=params)
+
+
+def update_columns(
+    conn: sqlite3.Connection,
+    table: str,
+    key_columns: Sequence[str],
+    df: pd.DataFrame,
+    value_columns: Sequence[str],
+) -> int:
+    """按主键 UPDATE 指定列（用于回填派生列，例如 fundamental 的 TTM）。"""
+    if df.empty:
+        return 0
+    set_clause = ", ".join(f"{c} = ?" for c in value_columns)
+    where_clause = " AND ".join(f"{c} = ?" for c in key_columns)
+    sql = f"UPDATE {table} SET {set_clause} WHERE {where_clause}"
+
+    frame = df.loc[:, [*value_columns, *key_columns]].copy()
+    frame = frame.astype(object).where(pd.notnull(frame), None)
+    conn.executemany(sql, list(frame.itertuples(index=False, name=None)))
+    return len(frame)
 
 
 def read_etf_price(conn: sqlite3.Connection, symbol: str) -> pd.DataFrame:

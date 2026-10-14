@@ -2,7 +2,7 @@
 
 A 股 / 美股**选股研究工具**，同时提供 **backtrader 策略回测**能力。
 
-> 重构状态：**阶段 2.2 完成**（数据落库 SQLite + 增量更新）。
+> 重构状态：**阶段 2.4 进行中**（桌面界面 + 估值历史分位）。
 > 详见 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) 与 [docs/data_model.md](docs/data_model.md)。
 
 ## 快速开始
@@ -66,8 +66,42 @@ copy .env.example .env
 | `quant update-price --stock 000001 600519` | 指定股票 |
 | `quant update-price --mode full` | 整段重拉（前复权因子变化后需要） |
 | `quant update-etf` | ETF 日线增量更新 |
+| `quant update-financial` | 财务指标增量更新（逐股，较慢，建议后台跑） |
 | `quant update-all` | 按顺序执行以上全部 |
 | `quant rebuild-growth` | 从 `fundamental` 全量重算单季增长表 |
+
+### 选股与回测
+
+| 命令 | 作用 |
+|---|---|
+| `quant screen --list` | 列出所有可用过滤器 |
+| `quant screen --filter exclude_st --filter market_cap:max=80` | 按过滤链选股，打印每一步剩余数量 |
+| `quant screen --filter growth:min=30 --sort market_cap --out picks.csv` | 排序并导出 CSV |
+| `quant screen --display-columns` | 输出列名用中文展示名 |
+| `quant backtest --list` | 列出所有可用策略 |
+| `quant backtest --strategy ma_obv --symbol 512480` | 运行回测（收益率/回撤/夏普/胜率） |
+| `quant backtest --strategy ma_obv --ma-period 10` | 带参数回测 |
+
+### 桌面界面
+
+```bat
+scripts\run_ui.bat          :: 双击启动
+.venv\Scripts\python.exe -m quant ui          :: 或命令行启动
+.venv\Scripts\python.exe -m quant ui 000001   :: 启动后直接打开某只股票
+```
+
+六个页面：**数据总览**（新鲜度 + 一键更新）、**选股筛选**（条件编辑 + 结果 + 方案保存）、
+**个股分析**（K线 / 估值带 / 财务 / 估值历史 / 原始数据）、**策略回测**（参数表单 + 净值曲线 + 成交明细）、
+**数据浏览器**（任意表分页 + 导出）、**设置/关于**。设计稿见 [docs/ui_design.md](docs/ui_design.md)。
+
+### 估值历史分位
+
+```bat
+quant rebuild-valuation --windows 3 5 10 0 --workers 4   :: 重建 PE/PB/PS 历史分位
+quant rebuild-ttm                                        :: 回填 fundamental 的 TTM 列
+```
+
+分位含义：窗口内「估值低于当前」的交易日占比。分位 ≤ 10 表示当前处于窗口内最低的 10%。
 
 ### 导出
 
@@ -82,6 +116,7 @@ copy .env.example .env
 quant/                    主包（唯一可导入代码）
 ├── config.py             配置：环境变量 > .env > 默认值
 ├── cli.py                统一命令行入口
+├── query.py              统一查询 API（快照 / 行情 / 基本面 / 增长）
 ├── data/                 数据层
 │   ├── schema.py         数据契约：英文列名 + 中文展示名映射
 │   ├── store.py          SQLite 建表 / 读写 / 查询
@@ -97,10 +132,21 @@ quant/                    主包（唯一可导入代码）
 │   ├── growth.py         季度读取、单季增长（向量化）
 │   └── financial.py      TTM、每股净资产修补、PE/PB
 ├── price/loader.py       日线读取 + 估值
-├── strategy/             backtrader 策略（ma_obv / volume_breakout）
-├── filter/               可插拔选股过滤器（2.3 实装）
+├── filter/               可插拔选股过滤器
+│   ├── base.py           Filter 协议 + FilterContext（快照/历史缓存）
+│   ├── builtin.py        14 个内置过滤器
+│   └── chain.py          过滤链 + 结果报告
+├── strategy/             backtrader 策略 + 统一回测入口
+│   ├── runner.py         cerebro 装配、BacktestResult、指标提取
+│   ├── ma_obv.py         均线 + OBV
+│   └── volume_breakout.py 缩量买入
 ├── trade/                选股/交易记录（records.py + records.csv）
-└── ui/                   桌面界面（2.4 实装）
+└── ui/                   桌面界面（wxPython）
+    ├── viewmodels.py     取数/过滤/导出（纯 pandas，可无头单测）
+    ├── charts.py         数据 -> matplotlib Figure
+    ├── widgets.py        表格/图表面板/指标卡/后台任务
+    ├── screens/          六个页面
+    └── app.py            主窗口与导航
 
 data/                     数据仓库（git 忽略）
 ├── quant.db              SQLite 主库（唯一查询入口）
@@ -163,5 +209,9 @@ quant calc-growth -> CSV
 |---|---|---|
 | 2.1 | 依赖清单 + 包结构 + 统一入口 | 完成 |
 | 2.2 | 数据稳定化：英文 schema、SQLite 主库、original 归档、增量更新 | 完成 |
-| 2.3 | 主要功能接口：选股过滤链、基本面/行情查询、回测入口 | 待开始 |
-| 2.4 | 桌面 UI（显示层中文映射） | 待开始 |
+| 2.3 | 主要功能接口：选股过滤链、基本面/行情查询、回测入口 | 完成 |
+| 2.4 | 桌面 UI（显示层中文映射） | 进行中：界面与底层已就绪 |
+
+参考文档：[docs/filter_guide.md](docs/filter_guide.md)（过滤器指南）、
+[docs/data_model.md](docs/data_model.md)（数据模型）、
+[docs/usage.md](docs/usage.md)（使用说明）。

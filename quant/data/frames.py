@@ -82,6 +82,44 @@ def prepare_etf_frame(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     return df.loc[:, list(columns)]
 
 
+def prepare_financial_frame(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """财务指标原始表（新浪中文列）-> financial_indicator 表结构（含 TTM）。
+
+    这是财务数据进入数据库的**唯一入口**：
+    - 列名按 schema.FINANCIAL_COLUMN_MAP 映射并只保留精选列
+    - 计算 eps_ttm / bvps_ttm（PE/PB 的基础）
+    """
+    from quant.foundation.financial import financial_to_ttm
+
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    df = df.rename(columns=schema.FINANCIAL_COLUMN_MAP)
+    if "report_date" not in df.columns:
+        logger.warning("%s 财务数据缺少日期列，跳过", symbol)
+        return pd.DataFrame()
+
+    keep = [c for c in schema.FINANCIAL_COLUMN_MAP.values() if c in df.columns]
+    df = df.loc[:, keep].copy()
+    df["symbol"] = str(symbol).zfill(6)
+    df["report_date"] = df["report_date"].astype(str).str.strip()
+    df = df[df["report_date"].str.match(_DATE_PATTERN, na=False)]
+    if df.empty:
+        return pd.DataFrame()
+
+    df = df.drop_duplicates(subset=["report_date"], keep="last").sort_values("report_date")
+    df["idate"] = df["report_date"].str.replace("-", "", regex=False).astype("int64")
+    df = _to_numeric(df, [c for c in keep if c != "report_date"])
+
+    df = financial_to_ttm(df)
+
+    columns = ["symbol", "report_date", "idate", *schema.FINANCIAL_VALUE_COLUMNS]
+    for column in columns:
+        if column not in df.columns:
+            df[column] = None
+    return df.loc[:, columns].reset_index(drop=True)
+
+
 def merge_adjusted(raw: pd.DataFrame, adjusted: pd.DataFrame, date_column: str = "日期") -> pd.DataFrame:
     """把不复权表与前复权表按日期合并成一张带 *_qfq 列的表。
 

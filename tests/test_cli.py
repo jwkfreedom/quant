@@ -8,7 +8,7 @@ from quant.cli import build_parser, main
 
 SUBCOMMANDS = (
     "info", "check", "db-init", "db-stats", "db-migrate",
-    "update-jibenmian", "update-price", "update-etf", "update-all",
+    "update-jibenmian", "update-price", "update-etf", "update-financial", "update-all",
     "rebuild-growth", "calc-growth",
 )
 

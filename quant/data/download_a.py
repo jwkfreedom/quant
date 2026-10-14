@@ -168,13 +168,112 @@ def fetch_price_qfq(symbol: str, start_date: str, end_date: str) -> pd.DataFrame
                               start_date=start_date, end_date=end_date, adjust="qfq")
 
 
-def fetch_price(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """拉取并合并「不复权 + 前复权」日线，返回带 *_qfq 列的原始中文表。"""
-    raw = fetch_price_raw(symbol, start_date, end_date)
+#: 新浪日线接口的英文列 -> 我们的原始中文列
+_SINA_COLUMN_MAP = {
+    "date": "日期",
+    "open": "开盘",
+    "high": "最高",
+    "low": "最低",
+    "close": "收盘",
+    "volume": "成交量",
+    "amount": "成交额",
+}
+
+#: 需要多取几天才能算准第一行的涨跌幅/振幅
+_SINA_WARMUP_DAYS = 20
+
+
+def fetch_price_sina(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """用新浪接口取日线，转换成与东财一致的列结构。
+
+    用途：东财（`stock_zh_a_hist`）被限流时作为备用数据源。
+    返回列与 `fetch_price` 相同（中文列 + *_qfq）。
+
+    说明：
+        - `turnover` 是小数比例，这里乘 100 转成百分比；
+        - 涨跌额 / 涨跌幅 / 振幅 由前收盘价自行计算（会多取 20 个自然日以便第一行也有值）。
+    """
+    sina_symbol = platform_symbol(symbol, "sinaprice")  # sh600519 / sz000002
+
+    warmup = (datetime.datetime.strptime(start_date, "%Y%m%d")
+              - datetime.timedelta(days=_SINA_WARMUP_DAYS)).strftime("%Y%m%d")
+
+    raw = ak.stock_zh_a_daily(symbol=sina_symbol, start_date=warmup, end_date=end_date, adjust="")
     if raw is None or raw.empty:
         return pd.DataFrame(columns=_PRICE_COLUMNS)
-    adjusted = fetch_price_qfq(symbol, start_date, end_date)
-    return merge_adjusted(raw, adjusted)
+
+    adjusted = ak.stock_zh_a_daily(symbol=sina_symbol, start_date=warmup, end_date=end_date, adjust="qfq")
+
+    df = raw.rename(columns=_SINA_COLUMN_MAP).copy()
+    df["日期"] = pd.to_datetime(df["日期"]).dt.strftime("%Y-%m-%d")
+    df = df.sort_values("日期").reset_index(drop=True)
+
+    for column in ("开盘", "最高", "最低", "收盘", "成交量", "成交额"):
+        df[column] = pd.to_numeric(df.get(column), errors="coerce")
+
+    if "turnover" in raw.columns:
+        df["换手率"] = pd.to_numeric(raw["turnover"].values, errors="coerce") * 100
+    else:
+        df["换手率"] = None
+
+    prev_close = df["收盘"].shift(1)
+    df["涨跌额"] = df["收盘"] - prev_close
+    df["涨跌幅"] = (df["收盘"] / prev_close - 1) * 100
+    df["振幅"] = (df["最高"] - df["最低"]) / prev_close * 100
+
+    if adjusted is not None and not adjusted.empty:
+        qfq = adjusted.rename(columns={
+            "date": "日期", "open": "开盘_qfq", "high": "最高_qfq",
+            "low": "最低_qfq", "close": "收盘_qfq",
+        })
+        qfq["日期"] = pd.to_datetime(qfq["日期"]).dt.strftime("%Y-%m-%d")
+        df = df.merge(qfq.loc[:, ["日期", "开盘_qfq", "最高_qfq", "最低_qfq", "收盘_qfq"]],
+                      on="日期", how="left")
+
+    # 去掉为算指标而多取的预热行
+    start_text = datetime.datetime.strptime(start_date, "%Y%m%d").strftime("%Y-%m-%d")
+    df = df[df["日期"] >= start_text].reset_index(drop=True)
+
+    return df.loc[:, [c for c in _PRICE_COLUMNS if c in df.columns]]
+
+
+def fetch_price(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    *,
+    source: str = "auto",
+    retries: int = 2,
+) -> pd.DataFrame:
+    """拉取并合并「不复权 + 前复权」日线，返回带 *_qfq 列的原始中文表。
+
+    参数 source:
+        'auto'      先试东财，失败或返回空时自动改用新浪（推荐）
+        'eastmoney' 只用东财
+        'sina'      只用新浪
+    """
+    if source in ("auto", "eastmoney"):
+        last_error: Exception | None = None
+        for attempt in range(retries + 1):
+            try:
+                raw = fetch_price_raw(symbol, start_date, end_date)
+                if raw is not None and not raw.empty:
+                    adjusted = fetch_price_qfq(symbol, start_date, end_date)
+                    return merge_adjusted(raw, adjusted)
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt < retries:
+                    time.sleep(0.8 * (attempt + 1))
+
+        if source == "eastmoney":
+            if last_error:
+                raise last_error
+            return pd.DataFrame(columns=_PRICE_COLUMNS)
+        logger.debug("东财取数失败或被限流，改用新浪: %s", symbol)
+
+    return fetch_price_sina(symbol, start_date, end_date)
 
 
 # --------------------------------------------------------------------------
