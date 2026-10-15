@@ -75,6 +75,8 @@ copy .env.example .env
 | 命令 | 作用 |
 |---|---|
 | `quant screen --list` | 列出所有可用过滤器 |
+| `quant filter-guide` | 打印筛选条件说明书（参数含义与例子，与界面「说明」按钮一致） |
+| `quant filter-guide --filter pe_percentile` | 只看某个条件的说明 |
 | `quant screen --filter exclude_st --filter market_cap:max=80` | 按过滤链选股，打印每一步剩余数量 |
 | `quant screen --filter growth:min=30 --sort market_cap --out picks.csv` | 排序并导出 CSV |
 | `quant screen --display-columns` | 输出列名用中文展示名 |
@@ -99,9 +101,9 @@ scripts\run_ui.bat          :: 双击启动
 | 页面 | 操作 |
 |---|---|
 | 所有表格 | **点击列头排序**（升序 → 降序 → 取消）、**右键菜单**、Ctrl+C 复制选中区域 |
-| 选股筛选 | **双击结果行跳转到个股分析**；右键可「查看个股分析 / 复制代码 / 导出选中」 |
+| 选股筛选 | **「说明」按钮弹出完整筛选说明书**（每个参数的含义/范围/例子 + 快照日期说明 + 过滤链机制）；**右键某个条件名**可单独看该条件的说明；**双击结果行跳转到个股分析**；右键结果可「查看个股分析 / 复制代码 / 导出选中」 |
 | 个股分析 | K 线支持**日/周/月周期**、**前复权/不复权**切换，可叠加 **MACD / RSI** |
-| 策略回测 | 第二个页签是**参数扫描**：给定参数区间与步长，逐值回测并给出最优值（表格 + 曲线） |
+| 策略回测 | 左侧有**策略说明**（参数含义 + 算法步骤，随策略切换自动更新）；第二个页签是**参数扫描**：给定参数区间与步长，逐值回测并给出最优值（表格 + 曲线） |
 
 ### 估值历史分位
 
@@ -204,6 +206,29 @@ quant calc-growth -> CSV
 .venv\Scripts\python.exe -m pytest          :: 运行单测（199 条）
 .venv\Scripts\python.exe -m quant --help    :: 查看命令
 ```
+
+### 新增一个回测策略
+
+在 `quant/strategy/` 下新建模块，声明三样东西，界面会自动生成参数表单和策略说明：
+
+```python
+PARAMS_SPEC = [                       # 参数表单 + 策略说明里的参数表
+    {"name": "ma_period", "label": "均线周期", "type": "int", "default": 20,
+     "min": 2, "max": 250, "help": "收盘价上穿该均线才考虑买入"},
+]
+
+RULES = [                             # 算法步骤（界面原样展示）
+    "数据：ETF 日线（前复权）",
+    "买入：空仓 且 收盘价 > MA → 市价买入",
+    "卖出：持仓 且 收盘价 < MA → 市价卖出",
+]
+
+def run_backtest(symbol, cash=100000.0, commission=0.001, plot=False, **params) -> BacktestResult:
+    ...
+```
+
+再用 `register_strategy(name, runner, default_symbol, description, params=PARAMS_SPEC, rules=RULES)`
+注册即可出现在下拉框里。
 
 约定：
 

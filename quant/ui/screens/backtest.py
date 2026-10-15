@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pandas as pd
 import wx
 
 from quant.ui import charts, viewmodels as vm
@@ -64,6 +65,7 @@ class BacktestPanel(wx.Panel):
         left.Add(self.params_sizer, 0, wx.EXPAND | wx.ALL, 8)
 
         run_button = wx.Button(left_panel, label="运行回测")
+        run_button.SetDefault()
         run_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_run())
         left.Add(run_button, 0, wx.ALL, 8)
 
@@ -71,9 +73,21 @@ class BacktestPanel(wx.Panel):
         export_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_export())
         left.Add(export_button, 0, wx.ALL, 8)
 
+        # ---- 策略说明（参数 + 算法，内容由策略声明生成）----
+        explain_box = wx.StaticBoxSizer(wx.VERTICAL, left_panel, "策略说明")
+        self.explain_text = wx.TextCtrl(
+            left_panel,
+            style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_DONTWRAP | wx.TE_RICH2,
+        )
+        self.explain_text.SetMinSize((320, 190))
+        # 等宽字体，参数表的对齐才不会乱（Consolas 缺失时 wx 会自动回退）
+        self.explain_text.SetFont(wx.Font(wx.FontInfo(9).FaceName("Consolas")))
+        explain_box.Add(self.explain_text, 1, wx.EXPAND | wx.ALL, 4)
+        left.Add(explain_box, 1, wx.EXPAND | wx.ALL, 8)
+
         self._left_panel = left_panel
         left_panel.SetSizer(left)
-        left_panel.SetMinSize((320, -1))
+        left_panel.SetMinSize((380, -1))
         root.Add(left_panel, 0, wx.EXPAND | wx.ALL, 6)
 
         # ---------------- 右侧结果 ----------------
@@ -83,6 +97,11 @@ class BacktestPanel(wx.Panel):
         # --- 页签 1：单次回测结果 ---
         result_page = wx.Panel(self.notebook)
         result_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        self.result_text = wx.StaticText(result_page, label="尚未运行")
+        self.result_text.SetForegroundColour(wx.Colour(90, 90, 90))
+        result_sizer.Add(self.result_text, 0, wx.EXPAND | wx.ALL, 6)
+
         self.cards = MetricCards(result_page, columns=4)
         result_sizer.Add(self.cards, 0, wx.EXPAND | wx.ALL, 6)
 
@@ -158,6 +177,11 @@ class BacktestPanel(wx.Panel):
         if not current or self._last_strategy not in (None, info.name):
             self.symbol_input.SetValue(info.default_symbol)
         self._last_strategy = info.name
+
+        # 策略说明：参数含义 + 算法步骤
+        if hasattr(self, "explain_text"):
+            self.explain_text.SetValue(info.explain())
+            self.explain_text.SetInsertionPoint(0)
 
         # 参数扫描的可选参数跟着策略走
         if hasattr(self, "sweep_param"):
@@ -294,9 +318,19 @@ class BacktestPanel(wx.Panel):
             self.figure_panel.set_figure(charts.equity_figure(result))
         except Exception as exc:  # pragma: no cover
             error_dialog(self, exc)
-        self.grid.SetDataFrame(__import__("pandas").DataFrame(result.trade_list),
-                               display_names=True)
-        self.Layout()
+        self.grid.SetDataFrame(pd.DataFrame(result.trade_list), display_names=True)
+
+        # 结果文字摘要：即使卡片/图表出问题，用户也能看到结果
+        self.result_text.SetLabel(result.report().replace("\n", "    "))
+        self.relayout()
+
+    def relayout(self):
+        """控件重建后强制重新布局与重绘（wx 不会自动跟着 sizer 变化刷新）。"""
+        for window in (self.notebook.GetCurrentPage(), self.notebook, self):
+            if window is not None:
+                window.Layout()
+                window.Refresh()
+        self.Update()
 
     def on_export(self):
         if self.result is None or not self.result.trade_list:

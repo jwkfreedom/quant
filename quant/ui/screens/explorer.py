@@ -6,7 +6,7 @@ import wx
 
 from quant.data import schema, store
 from quant.ui import viewmodels as vm
-from quant.ui.widgets import BusyRunner, DataFrameGrid, ask_save_path, error_dialog
+from quant.ui.widgets import BusyRunner, DataFrameGrid, ask_save_path, error_dialog, relayout
 
 PAGE_SIZES = ["100", "200", "500", "1000", "2000"]
 
@@ -164,7 +164,7 @@ class ExplorerPanel(wx.Panel):
         self.status.SetLabel(f"共 {self.total:,} 行 · 第 {self.page}/{pages} 页")
         self.prev_button.Enable(self.page > 1)
         self.next_button.Enable(self.page < pages)
-        self.Layout()
+        relayout(self, self.grid)
 
     def on_page(self, delta: int):
         self.page = max(1, self.page + delta)

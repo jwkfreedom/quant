@@ -23,6 +23,7 @@
     quant calc-growth                 导出单季增长 CSV（英文列名）
 
     quant screen                      按过滤链选股（--list 查看可用过滤器）
+    quant filter-guide                筛选条件说明书（参数含义与例子）
     quant backtest                    运行策略回测（--list 查看可用策略）
 
     quant ui [symbol]                 启动桌面界面
@@ -277,6 +278,25 @@ def cmd_rebuild_growth(args: argparse.Namespace) -> int:
     print(f"单季增长表: {result.get('rows', 0)} 行 / {result.get('symbols', 0)} 只股票")
     if result.get("message"):
         print(result["message"])
+    return 0
+
+
+def cmd_filter_guide(args: argparse.Namespace) -> int:
+    """打印筛选条件说明书（与界面「说明」按钮内容一致）。"""
+    from quant.filter.guide import FILTER_GUIDE, build_guide, describe_filter
+
+    if args.filter:
+        for name in args.filter:
+            print(describe_filter(name))
+            print()
+        return 0
+
+    if args.list:
+        for name in sorted(FILTER_GUIDE):
+            print(f"{name:<18}{FILTER_GUIDE[name].get('intro', '')}")
+        return 0
+
+    print(build_guide())
     return 0
 
 
@@ -571,6 +591,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stop-loss", type=float, default=None, help="volume_breakout: 止损比例")
     p.add_argument("--take-profit", type=float, default=None, help="volume_breakout: 止盈比例")
     p.set_defaults(func=cmd_backtest)
+
+    p = sub.add_parser("filter-guide", help="打印筛选条件说明书")
+    p.add_argument("--filter", nargs="+", default=None, help="只看指定条件")
+    p.add_argument("--list", action="store_true", help="只列名称与一句话说明")
+    p.set_defaults(func=cmd_filter_guide)
 
     p = sub.add_parser("ui", help="启动桌面界面（需要 wxPython）")
     p.add_argument("symbol", nargs="?", default=None, help="可选：直接打开某只股票")

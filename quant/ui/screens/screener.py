@@ -8,7 +8,14 @@ import wx
 
 from quant.filter import available_filters, get_filter_class
 from quant.ui import viewmodels as vm
-from quant.ui.widgets import BusyRunner, DataFrameGrid, ask_save_path, error_dialog
+from quant.ui.widgets import (
+    BusyRunner,
+    DataFrameGrid,
+    ask_save_path,
+    error_dialog,
+    relayout,
+    show_text_dialog,
+)
 
 #: 条件分组：过滤器名 -> 分组标题
 GROUPS: list[tuple[str, list[str]]] = [
@@ -25,9 +32,13 @@ DEFAULT_COLUMNS = ["symbol", "name", "close_org", "market_cap", "pe", "pe_pct_10
 
 
 class ConditionRow:
-    """一个过滤器的界面行：复选框 + 参数输入框。"""
+    """一个过滤器的界面行：复选框 + 参数输入框。
 
-    def __init__(self, panel: wx.Panel, sizer: wx.Sizer, name: str):
+    右键条件名可以弹出该条件的详细说明（参数含义 + 例子）。
+    """
+
+    def __init__(self, panel: wx.Panel, sizer: wx.Sizer, name: str,
+                 on_help_requested=None):
         self.name = name
         cls = get_filter_class(name)
         signature = inspect.signature(cls.__init__)
@@ -35,7 +46,10 @@ class ConditionRow:
 
         self.checkbox = wx.CheckBox(panel, label=name)
         self.checkbox.SetMinSize((150, -1))
-        self.checkbox.SetToolTip(getattr(cls, "description", ""))
+        self.checkbox.SetToolTip(getattr(cls, "description", "") + "\n（右键查看详细说明）")
+        if on_help_requested is not None:
+            self.checkbox.Bind(wx.EVT_RIGHT_UP,
+                               lambda _evt, n=name: on_help_requested(n))
         # 注意：sizer 是垂直 BoxSizer，不能带 ALIGN_CENTER_VERTICAL（wx 会断言失败）
         sizer.Add(self.checkbox, 0, wx.ALL, 3)
 
@@ -99,14 +113,16 @@ class ScreenerPanel(wx.Panel):
             caption.SetFont(font)
             cond_sizer.Add(caption, 0, wx.ALL, 4)
             for name in present:
-                self.rows.append(ConditionRow(self.conditions, cond_sizer, name))
+                self.rows.append(ConditionRow(self.conditions, cond_sizer, name,
+                                              on_help_requested=self.on_filter_help))
 
         others = sorted(registered - {n for _g, names in GROUPS for n in names})
         if others:
             caption = wx.StaticText(self.conditions, label="▼ 其它")
             cond_sizer.Add(caption, 0, wx.ALL, 4)
             for name in others:
-                self.rows.append(ConditionRow(self.conditions, cond_sizer, name))
+                self.rows.append(ConditionRow(self.conditions, cond_sizer, name,
+                                              on_help_requested=self.on_filter_help))
 
         self.conditions.SetSizer(cond_sizer)
         left_box.Add(self.conditions, 1, wx.EXPAND | wx.ALL, 6)
@@ -138,6 +154,11 @@ class ScreenerPanel(wx.Panel):
         reset_button = wx.Button(left_panel, label="全部清空")
         reset_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_reset())
         run_row.Add(reset_button, 0, wx.ALL, 4)
+
+        help_button = wx.Button(left_panel, label="说明")
+        help_button.SetToolTip("查看每个筛选条件的参数含义、取值范围和例子")
+        help_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_help())
+        run_row.Add(help_button, 0, wx.ALL, 4)
         left_box.Add(run_row, 0, wx.EXPAND | wx.ALL, 4)
 
         left_panel.SetSizer(left_box)
@@ -224,6 +245,18 @@ class ScreenerPanel(wx.Panel):
         except Exception as exc:
             error_dialog(self, exc)
 
+    def on_help(self):
+        """弹出筛选条件说明书（含快照日期说明）。"""
+        from quant.filter.guide import build_guide
+
+        show_text_dialog(self, "筛选条件说明", build_guide(GROUPS))
+
+    def on_filter_help(self, name: str):
+        """单个条件的说明。"""
+        from quant.filter.guide import describe_filter
+
+        show_text_dialog(self, f"条件说明 · {name}", describe_filter(name))
+
     def on_reset(self):
         for row in self.rows:
             row.checkbox.SetValue(False)
@@ -247,7 +280,7 @@ class ScreenerPanel(wx.Panel):
         self.grid.SetDataFrame(summary.frame)
         self.summary.SetLabel(f"结果 {summary.count} 只　（快照 {summary.as_of}）")
         self.steps.SetLabel(summary.step_text())
-        self.Layout()
+        relayout(self, self.grid)
 
     def on_copy_command(self):
         specs = self.specs()

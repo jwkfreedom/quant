@@ -35,6 +35,38 @@ def test_default_params():
     assert params == {"ma_period": 20, "obv_period": 14}
 
 
+def test_every_strategy_has_rules():
+    for info in list_strategies():
+        assert info.rules, f"{info.name} 缺少算法说明（RULES）"
+        assert len(info.rules) >= 3
+
+
+def test_explain_contains_params_and_rules():
+    text = get_strategy("ma_obv").explain()
+    assert "【ma_obv】" in text
+    assert "【参数】" in text
+    assert "【算法】" in text
+    assert "【默认标的】512480" in text
+    for param in ("ma_period", "obv_period"):
+        assert param in text
+    # 算法步骤要编号，子项不参与编号
+    assert "  1. " in text and "  2. " in text
+
+
+def test_explain_handles_strategy_without_params():
+    def fake_runner(symbol, **kwargs):
+        return BacktestResult("fake", symbol, 1.0, 1.0)
+
+    register_strategy("fake_no_params", fake_runner, default_symbol="000001",
+                      description="无参数策略")
+    try:
+        text = get_strategy("fake_no_params").explain()
+        assert "该策略没有可调参数" in text
+        assert "尚未填写算法说明" in text
+    finally:
+        REGISTRY.pop("fake_no_params", None)
+
+
 def test_get_strategy_unknown():
     with pytest.raises(KeyError):
         get_strategy("nope")

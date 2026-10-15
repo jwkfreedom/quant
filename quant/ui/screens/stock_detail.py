@@ -5,7 +5,14 @@ from __future__ import annotations
 import wx
 
 from quant.ui import charts, viewmodels as vm
-from quant.ui.widgets import BusyRunner, DataFrameGrid, FigurePanel, error_dialog, ask_save_path
+from quant.ui.widgets import (
+    BusyRunner,
+    DataFrameGrid,
+    FigurePanel,
+    ask_save_path,
+    error_dialog,
+    relayout,
+)
 
 RANGES = [("近 3 月", 60), ("近 1 年", 250), ("近 3 年", 750), ("近 5 年", 1250), ("全部", 0)]
 
@@ -180,7 +187,7 @@ class StockDetailPanel(wx.Panel):
         self._render_cards()
         self.render()
         self.render_raw()
-        self.Layout()
+        relayout(self, self.notebook, self.notebook.GetCurrentPage())
 
     def _render_cards(self):
         metrics = self.detail.metrics if self.detail else {}

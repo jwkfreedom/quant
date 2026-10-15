@@ -16,6 +16,20 @@ from quant.strategy.runner import BacktestResult, benchmark_curve, build_cerebro
 
 logger = logging.getLogger(__name__)
 
+#: 算法说明（界面「策略说明」区直接展示）
+RULES: list[str] = [
+    "数据：个股日线（前复权收盘价），取自数据库 daily_price 表",
+    "指标 均量：过去 volume_ma 个交易日成交量的简单移动平均（SMA）",
+    "买入：空仓 且 当日成交量 < 缩量阈值 × 均量 → 市价买入（即「缩量」时进场）",
+    "卖出：持仓 且 满足任一条件 → 市价全部卖出",
+    "    · 收盘价 < 买入价 × (1 - 止损比例)",
+    "    · 收盘价 > 买入价 × (1 + 止盈比例)",
+    "买入价取实际成交价；未触发止盈止损则一直持有",
+    "仓位与费用：每次建仓最多使用可用资金的 95%（PercentSizer），"
+    "手续费按「手续费率」收取，不计滑点",
+    "基准：同区间「买入持有」净值曲线",
+]
+
 #: 可在界面上调整的参数
 PARAMS_SPEC = [
     {"name": "volume_ratio", "label": "缩量阈值", "type": "float", "default": 0.4,

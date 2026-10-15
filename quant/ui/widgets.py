@@ -226,6 +226,71 @@ class DataFrameGrid(wx.grid.Grid):
             event.Skip()
 
 
+class TextDialog(wx.Dialog):
+    """只读长文本对话框（说明书 / 帮助）。
+
+    带「复制全部」按钮，方便把说明贴到别处。
+    """
+
+    def __init__(self, parent, title: str, text: str, *, size=(960, 720)):
+        super().__init__(parent, title=title, size=size,
+                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+
+        root = wx.BoxSizer(wx.VERTICAL)
+
+        self.text = wx.TextCtrl(
+            self, value=text,
+            style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_DONTWRAP | wx.TE_RICH2,
+        )
+        self.text.SetFont(wx.Font(wx.FontInfo(9).FaceName("Consolas")))
+        self.text.SetInsertionPoint(0)
+        root.Add(self.text, 1, wx.EXPAND | wx.ALL, 8)
+
+        buttons = wx.BoxSizer(wx.HORIZONTAL)
+        copy_button = wx.Button(self, label="复制全部")
+        copy_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_copy())
+        buttons.Add(copy_button, 0, wx.ALL, 4)
+        buttons.AddStretchSpacer()
+        close_button = wx.Button(self, wx.ID_CANCEL, label="关闭")
+        buttons.Add(close_button, 0, wx.ALL, 4)
+        root.Add(buttons, 0, wx.EXPAND | wx.ALL, 6)
+
+        self.SetSizer(root)
+        self.SetEscapeId(wx.ID_CANCEL)
+        self.Centre()
+
+    def on_copy(self):
+        if wx.TheClipboard.Open():
+            wx.TheClipboard.SetData(wx.TextDataObject(self.text.GetValue()))
+            wx.TheClipboard.Close()
+            wx.MessageBox("说明已复制到剪贴板", "提示", wx.OK | wx.ICON_INFORMATION, self)
+
+
+def show_text_dialog(parent, title: str, text: str) -> None:
+    """便捷函数：弹出只读文本对话框。"""
+    dialog = TextDialog(parent, title, text)
+    try:
+        dialog.ShowModal()
+    finally:
+        dialog.Destroy()
+
+
+def relayout(*windows) -> None:
+    """控件重建后强制重新布局与重绘。
+
+    wx 不会在 sizer 内容变化后自动刷新已显示的区域，
+    尤其是「面板套在 Notebook 页里」的情况，必须显式 Layout + Refresh。
+    """
+    for window in windows:
+        if window is None:
+            continue
+        try:
+            window.Layout()
+            window.Refresh()
+        except Exception:  # pragma: no cover - 窗口可能已销毁
+            logger.debug("relayout 失败", exc_info=True)
+
+
 class ContextMenu:
     """表格右键菜单：页面通过 `add(label, callback)` 注册菜单项。
 
@@ -279,6 +344,11 @@ class FigurePanel(wx.Panel):
         self._canvas = FigureCanvasWxAgg(self, -1, figure)
         self._sizer.Add(self._canvas, 1, wx.EXPAND)
         self.Layout()
+        parent = self.GetParent()
+        if parent is not None:
+            parent.Layout()
+            parent.Refresh()
+        self.Refresh()
 
 
 class MetricCards(wx.Panel):
@@ -314,7 +384,14 @@ class MetricCards(wx.Panel):
             box.SetSizer(inner)
             self._sizer.Add(box, 0, wx.ALL, 4)
             self._labels[title] = number
+
+        # 子控件是重建的，父面板必须重新布局并重绘，否则界面上看不到变化
         self.Layout()
+        parent = self.GetParent()
+        if parent is not None:
+            parent.Layout()
+            parent.Refresh()
+        self.Refresh()
 
 
 class BusyRunner:
@@ -357,13 +434,25 @@ class BusyRunner:
 
         if error is not None:
             if on_error is not None:
-                on_error(error)
+                try:
+                    on_error(error)
+                except Exception:  # pragma: no cover
+                    logger.exception("错误处理回调本身出错")
             else:
                 wx.MessageBox(f"{type(error).__name__}: {error}", "出错了",
                               wx.OK | wx.ICON_ERROR)
             return
 
-        on_done(result)
+        # 渲染回调里的异常以前会被 wx 吞进 stderr，界面上什么都看不到，
+        # 这里显式兜住并弹窗，避免"命令行有输出、UI 没反应"。
+        try:
+            on_done(result)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("界面渲染失败")
+            wx.MessageBox(
+                f"结果已算出，但界面渲染失败：\n\n{type(exc).__name__}: {exc}",
+                "渲染出错", wx.OK | wx.ICON_ERROR,
+            )
 
 
 def ask_save_path(parent, *, default_name: str = "export.csv",
