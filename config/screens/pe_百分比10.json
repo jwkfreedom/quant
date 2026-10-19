@@ -1,0 +1,9 @@
+{
+  "name": "pe_百分比10",
+  "note": "",
+  "specs": [
+    "pe_percentile:min=1,max=10",
+    "roe"
+  ],
+  "saved_at": "2026-10-14 15:44:44"
+}
