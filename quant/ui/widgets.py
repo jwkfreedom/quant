@@ -13,6 +13,10 @@ import pandas as pd
 import wx
 import wx.grid
 
+from quant.ui import theme
+from quant.ui.components import make_font, make_button, qbrush, qpen, style_checkbox, text_label
+from quant.ui.theme import C
+
 logger = logging.getLogger(__name__)
 
 #: 表格最多显示的行数（避免大表卡顿；导出不受限制）
@@ -42,10 +46,8 @@ class DataFrameGrid(wx.grid.Grid):
         self.on_context_menu = None        # Callable[[dict, wx.Event], None]
 
         self.CreateGrid(0, 0)
-        self.SetRowLabelSize(60)
         self.EnableEditing(False)
-        # wx.grid 没有 SetAlternateRowColour，用默认底色代替（隔行变色仅在部分版本可用）
-        self.SetDefaultCellBackgroundColour(wx.Colour(255, 255, 255))
+        self.apply_theme()
 
         if sortable:
             self.Bind(wx.grid.EVT_GRID_LABEL_LEFT_CLICK, self._on_label_click)
@@ -59,6 +61,51 @@ class DataFrameGrid(wx.grid.Grid):
     def frame(self) -> pd.DataFrame:
         """当前显示的完整数据（未截断、未按展示名改名）。"""
         return self._df
+
+    # ------------------------------------------------------------------
+    # 外观
+    # ------------------------------------------------------------------
+    def apply_theme(self):
+        """套用统一表格样式：行高、表头、极浅网格线、选中色。"""
+        self.SetDefaultRowSize(30)
+        self.SetDefaultColSize(110)
+        self.SetRowLabelSize(58)
+        self.SetColLabelSize(34)
+        self.SetRowLabelAlignment(wx.ALIGN_RIGHT, wx.ALIGN_CENTRE_VERTICAL)
+
+        self.SetLabelFont(make_font(theme.FONT_SMALL, bold=True))
+        self.SetLabelTextColour(wx.Colour(C.text_secondary))
+        self.SetLabelBackgroundColour(wx.Colour(C.table_header))
+
+        self.SetDefaultCellFont(make_font(theme.FONT_SMALL))
+        self.SetDefaultCellTextColour(wx.Colour(C.text))
+        self.SetDefaultCellBackgroundColour(wx.Colour(C.card))
+        self.SetDefaultCellAlignment(wx.ALIGN_LEFT, wx.ALIGN_CENTRE_VERTICAL)
+
+        # 极浅的网格线：竖向几乎看不见，横向当作行分隔线
+        self.EnableGridLines(True)
+        self.SetGridLineColour(wx.Colour(C.table_line))
+
+        self.SetSelectionBackground(wx.Colour(C.table_selected))
+        self.SetSelectionForeground(wx.Colour(C.text))
+        self.SetCellHighlightPenWidth(1)
+        self.SetCellHighlightColour(wx.Colour("#CBD5E1"))
+
+    def _apply_column_styles(self):
+        """数字列右对齐 + 等宽字体。"""
+        mono = make_font(theme.FONT_SMALL, mono=True)
+        for index in range(min(self.GetNumberCols(), len(self._df.columns))):
+            try:
+                numeric = pd.api.types.is_numeric_dtype(self._df.iloc[:, index])
+            except Exception:
+                numeric = False
+            attr = wx.grid.GridCellAttr()
+            if numeric:
+                attr.SetAlignment(wx.ALIGN_RIGHT, wx.ALIGN_CENTRE_VERTICAL)
+                attr.SetFont(mono)
+            else:
+                attr.SetFont(make_font(theme.FONT_SMALL))
+            self.SetColAttr(index, attr)
 
     def SetDataFrame(self, df: pd.DataFrame, *, display_names: bool = False, max_rows: int = MAX_GRID_ROWS):
         """填充表格。列名可选中文展示。"""
@@ -108,6 +155,7 @@ class DataFrameGrid(wx.grid.Grid):
             for index in range(len(text.columns)):
                 width = max(80, min(220, len(str(text.columns[index])) * 14 + 40))
                 self.SetColSize(index, width)
+            self._apply_column_styles()
         finally:
             self.Thaw()
 
@@ -242,22 +290,27 @@ class TextDialog(wx.Dialog):
             self, value=text,
             style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_DONTWRAP | wx.TE_RICH2,
         )
-        self.text.SetFont(wx.Font(wx.FontInfo(9).FaceName("Consolas")))
+        self.text.SetFont(make_font(theme.FONT_SMALL, mono=True))
+        self.text.SetBackgroundColour(wx.Colour(C.card))
+        self.text.SetForegroundColour(wx.Colour(C.text))
+        self.SetBackgroundColour(wx.Colour(C.bg))
         self.text.SetInsertionPoint(0)
-        root.Add(self.text, 1, wx.EXPAND | wx.ALL, 8)
+        root.Add(self.text, 1, wx.EXPAND | wx.ALL, 12)
 
         buttons = wx.BoxSizer(wx.HORIZONTAL)
-        copy_button = wx.Button(self, label="复制全部")
-        copy_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_copy())
+        copy_button = make_button(self, "复制全部", lambda _evt: self.on_copy())
         buttons.Add(copy_button, 0, wx.ALL, 4)
         buttons.AddStretchSpacer()
-        close_button = wx.Button(self, wx.ID_CANCEL, label="关闭")
+        close_button = make_button(self, "关闭", self._on_close)
         buttons.Add(close_button, 0, wx.ALL, 4)
-        root.Add(buttons, 0, wx.EXPAND | wx.ALL, 6)
+        root.Add(buttons, 0, wx.EXPAND | wx.ALL, 10)
 
         self.SetSizer(root)
         self.SetEscapeId(wx.ID_CANCEL)
         self.Centre()
+
+    def _on_close(self, _evt=None):
+        self.EndModal(wx.ID_CANCEL)
 
     def on_copy(self):
         if wx.TheClipboard.Open():
@@ -357,7 +410,8 @@ class MetricCards(wx.Panel):
     def __init__(self, parent, columns: int = 6):
         super().__init__(parent)
         self._columns = columns
-        self._sizer = wx.FlexGridSizer(rows=0, cols=columns, vgap=6, hgap=10)
+        # 不设底色：跟着父窗口走（页面底色是灰、卡片里是白），避免出现突兀的色块
+        self._sizer = wx.FlexGridSizer(rows=0, cols=columns, vgap=theme.GAP, hgap=theme.GAP)
         self._sizer.AddGrowableCol(0, 1)
         self.SetSizer(self._sizer)
         self._labels: dict[str, wx.StaticText] = {}
@@ -368,17 +422,11 @@ class MetricCards(wx.Panel):
         self._labels.clear()
         for title, value, colour in items:
             box = wx.Panel(self)
+            box.SetBackgroundColour(wx.Colour(C.card))
             inner = wx.BoxSizer(wx.VERTICAL)
-            caption = wx.StaticText(box, label=title)
-            caption.SetForegroundColour(wx.Colour(120, 120, 120))
-            caption.SetFont(caption.GetFont().Smaller())
-            number = wx.StaticText(box, label=str(value))
-            font = number.GetFont()
-            font.SetPointSize(font.GetPointSize() + 3)
-            font.SetWeight(wx.FONTWEIGHT_BOLD)
-            number.SetFont(font)
-            if colour:
-                number.SetForegroundColour(wx.Colour(colour))
+            caption = text_label(box, title, size=theme.FONT_SMALL, colour=C.text_secondary)
+            number = text_label(box, str(value), size=14, bold=True,
+                                colour=colour or C.text)
             inner.Add(caption, 0)
             inner.Add(number, 0, wx.TOP, 2)
             box.SetSizer(inner)

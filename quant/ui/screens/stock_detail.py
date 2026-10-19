@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import wx
 
-from quant.ui import charts, viewmodels as vm
+from quant.ui import charts, theme, viewmodels as vm
+from quant.ui.components import (Card, PageHeader, make_button, make_notebook,
+                                style_checkbox, style_input, text_label)
+from quant.ui.theme import C
 from quant.ui.widgets import (
     BusyRunner,
     DataFrameGrid,
     FigurePanel,
+    MetricCards,
     ask_save_path,
     error_dialog,
     relayout,
@@ -43,72 +47,86 @@ class StockDetailPanel(wx.Panel):
 
     def __init__(self, parent):
         super().__init__(parent)
+        self.SetBackgroundColour(wx.Colour(C.bg))
         self.runner = BusyRunner(self)
         self.detail: vm.StockDetail | None = None
 
         root = wx.BoxSizer(wx.VERTICAL)
 
-        # ---- 顶部：代码输入 ----
-        top = wx.BoxSizer(wx.HORIZONTAL)
-        top.Add(wx.StaticText(self, label="股票代码"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
+        self.header = PageHeader(
+            self, "个股分析",
+            subtitle="K 线、估值带、财务指标、估值历史与原始数据",
+            actions=[("载入", lambda _evt: self.on_load(), True)],
+        )
+        root.Add(self.header, 0, wx.EXPAND | wx.ALL, theme.PAD)
+
+        # ---- 查询条 ----
+        query_card = Card(self)
+        body = query_card.body
+
+        line1 = wx.BoxSizer(wx.HORIZONTAL)
+        line1.Add(text_label(body, "股票代码", colour=C.text_secondary), 0,
+                  wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
         # 绑定了 EVT_TEXT_ENTER 的 TextCtrl 必须带 wx.TE_PROCESS_ENTER 样式
-        self.symbol_input = wx.TextCtrl(self, size=(100, -1), value="000001",
+        self.symbol_input = wx.TextCtrl(body, size=(100, -1), value="000001",
                                         style=wx.TE_PROCESS_ENTER)
+        style_input(self.symbol_input)
         self.symbol_input.Bind(wx.EVT_TEXT_ENTER, lambda _evt: self.on_load())
-        top.Add(self.symbol_input, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
+        line1.Add(self.symbol_input, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        line1.Add(make_button(body, "载入", lambda _evt: self.on_load()), 0,
+                  wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 24)
 
-        load_button = wx.Button(self, label="载入")
-        load_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_load())
-        top.Add(load_button, 0, wx.ALL, 4)
+        self.search_input = style_input(wx.TextCtrl(body, size=(170, -1)), width=170)
+        self.search_input.SetHint("按名称搜索，如 平安")
+        line1.Add(self.search_input, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        line1.Add(make_button(body, "搜索", lambda _evt: self.on_search()), 0,
+                  wx.ALIGN_CENTER_VERTICAL)
 
-        self.search_input = wx.TextCtrl(self, size=(150, -1))
-        self.search_input.SetHint("按名称搜索")
-        search_button = wx.Button(self, label="搜索")
-        search_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_search())
-        top.Add(self.search_input, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
-        top.Add(search_button, 0, wx.ALL, 4)
+        line1.AddStretchSpacer()
+        self.title = text_label(body, "", size=theme.FONT_PAGE_TITLE, bold=True, colour=C.text)
+        line1.Add(self.title, 0, wx.ALIGN_CENTER_VERTICAL)
+        query_card.add(line1, 0, wx.EXPAND)
 
-        top.Add(wx.StaticText(self, label="区间"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 12)
-        self.range_choice = wx.Choice(self, choices=[name for name, _ in RANGES])
+        line2 = wx.BoxSizer(wx.HORIZONTAL)
+        line2.Add(text_label(body, "区间", colour=C.text_secondary), 0,
+                  wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.range_choice = style_input(wx.Choice(body, choices=[name for name, _ in RANGES]))
         self.range_choice.SetSelection(1)
         self.range_choice.Bind(wx.EVT_CHOICE, lambda _evt: self.render())
-        top.Add(self.range_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
+        line2.Add(self.range_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
 
-        top.Add(wx.StaticText(self, label="周期"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
-        self.freq_choice = wx.Choice(self, choices=[name for name, _ in FREQS])
+        line2.Add(text_label(body, "周期", colour=C.text_secondary), 0,
+                  wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.freq_choice = style_input(wx.Choice(body, choices=[name for name, _ in FREQS]))
         self.freq_choice.SetSelection(0)
         self.freq_choice.Bind(wx.EVT_CHOICE, lambda _evt: self.render())
-        top.Add(self.freq_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
+        line2.Add(self.freq_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
 
-        top.Add(wx.StaticText(self, label="复权"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
-        self.price_choice = wx.Choice(self, choices=[name for name, _ in PRICE_MODES])
+        line2.Add(text_label(body, "复权", colour=C.text_secondary), 0,
+                  wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.price_choice = style_input(wx.Choice(body, choices=[name for name, _ in PRICE_MODES]))
         self.price_choice.SetSelection(0)
         self.price_choice.Bind(wx.EVT_CHOICE, lambda _evt: self.render())
-        top.Add(self.price_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
+        line2.Add(self.price_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
 
-        self.macd_check = wx.CheckBox(self, label="MACD")
-        self.rsi_check = wx.CheckBox(self, label="RSI")
+        self.macd_check = style_checkbox(wx.CheckBox(body, label="MACD"))
+        self.rsi_check = style_checkbox(wx.CheckBox(body, label="RSI"))
         for checkbox in (self.macd_check, self.rsi_check):
             checkbox.Bind(wx.EVT_CHECKBOX, lambda _evt: self.render())
-            top.Add(checkbox, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
+            line2.Add(checkbox, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 12)
+        line2.AddStretchSpacer()
+        query_card.add_spacer(10)
+        query_card.add(line2, 0, wx.EXPAND)
 
-        top.AddStretchSpacer()
-        self.title = wx.StaticText(self, label="")
-        font = self.title.GetFont()
-        font.SetPointSize(font.GetPointSize() + 2)
-        font.SetWeight(wx.FONTWEIGHT_BOLD)
-        self.title.SetFont(font)
-        top.Add(self.title, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
-        root.Add(top, 0, wx.EXPAND | wx.ALL, 6)
+        root.Add(query_card, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, theme.PAD)
 
         # ---- 指标卡 ----
-        from quant.ui.widgets import MetricCards
-
         self.cards = MetricCards(self, columns=6)
-        root.Add(self.cards, 0, wx.EXPAND | wx.ALL, 6)
+        root.Add(self.cards, 0, wx.EXPAND | wx.ALL, theme.PAD)
 
         # ---- 页签 ----
-        self.notebook = wx.Notebook(self)
+        tab_card = Card(self)
+        self.notebook = make_notebook(tab_card.body)
         self.tabs: dict[str, wx.Window] = {}
 
         self.kline_panel = FigurePanel(self.notebook)
@@ -128,23 +146,28 @@ class StockDetailPanel(wx.Panel):
         self.tabs["history"] = self.history_panel
 
         raw_panel = wx.Panel(self.notebook)
+        raw_panel.SetBackgroundColour(wx.Colour(C.card))
         raw_sizer = wx.BoxSizer(wx.VERTICAL)
-        self.raw_choice = wx.Choice(raw_panel, choices=["日线", "财务指标", "基本面", "单季增长", "估值", "分位"])
+        raw_head = wx.BoxSizer(wx.HORIZONTAL)
+        self.raw_choice = style_input(wx.Choice(raw_panel, choices=[
+            "日线", "财务指标", "基本面", "单季增长", "估值", "分位"]))
         self.raw_choice.SetSelection(0)
         self.raw_choice.Bind(wx.EVT_CHOICE, lambda _evt: self.render_raw())
-        raw_head = wx.BoxSizer(wx.HORIZONTAL)
-        raw_head.Add(self.raw_choice, 0, wx.ALL, 4)
-        export_button = wx.Button(raw_panel, label="导出当前表")
-        export_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_export_raw())
-        raw_head.Add(export_button, 0, wx.ALL, 4)
-        raw_sizer.Add(raw_head, 0)
+        raw_head.Add(self.raw_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        raw_head.Add(make_button(raw_panel, "导出当前表",
+                                 lambda _evt: self.on_export_raw()), 0,
+                     wx.ALIGN_CENTER_VERTICAL)
+        raw_head.AddStretchSpacer()
+        raw_sizer.Add(raw_head, 0, wx.EXPAND | wx.TOP | wx.BOTTOM, 8)
         self.raw_grid = DataFrameGrid(raw_panel)
-        raw_sizer.Add(self.raw_grid, 1, wx.EXPAND | wx.ALL, 4)
+        raw_sizer.Add(self.raw_grid, 1, wx.EXPAND)
         raw_panel.SetSizer(raw_sizer)
         self.notebook.AddPage(raw_panel, "原始数据")
         self.tabs["raw"] = raw_panel
 
-        root.Add(self.notebook, 1, wx.EXPAND | wx.ALL, 6)
+        tab_card.add(self.notebook, 1, wx.EXPAND)
+        root.Add(tab_card, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, theme.PAD)
+
         self.SetSizer(root)
 
     # ------------------------------------------------------------------
@@ -191,10 +214,11 @@ class StockDetailPanel(wx.Panel):
 
     def _render_cards(self):
         metrics = self.detail.metrics if self.detail else {}
+        change = metrics.get("pct_change") or 0
         items = [
             ("最新价", _fmt(metrics.get("close")), None),
             ("涨跌幅", _fmt(metrics.get("pct_change"), percent=True),
-             (198, 40, 40) if (metrics.get("pct_change") or 0) >= 0 else (46, 125, 50)),
+             C.up if change >= 0 else C.down),
             ("总市值", _fmt((metrics.get("market_cap") or 0) / 1e8, 1, " 亿") if metrics.get("market_cap") else "—", None),
             ("PE(TTM)", _fmt(metrics.get("pe")), None),
             ("PE 十年分位", _fmt(metrics.get("pe_pct_10y"), 1, "%"), None),

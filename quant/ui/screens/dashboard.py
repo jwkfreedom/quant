@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import wx
 
+from quant.ui import theme
+from quant.ui.components import Card, PageHeader, make_button, text_label
+from quant.ui.theme import C
 from quant.ui import viewmodels as vm
 from quant.ui.widgets import BusyRunner, error_dialog
-
-COLOUR_OK = (46, 125, 50)
-COLOUR_WARN = (198, 40, 40)
 
 
 class DashboardPanel(wx.Panel):
@@ -16,44 +16,51 @@ class DashboardPanel(wx.Panel):
 
     def __init__(self, parent):
         super().__init__(parent)
+        self.SetBackgroundColour(wx.Colour(C.bg))
         self.runner = BusyRunner(self)
 
         root = wx.BoxSizer(wx.VERTICAL)
 
-        title = wx.StaticText(self, label="数据总览")
-        font = title.GetFont()
-        font.SetPointSize(font.GetPointSize() + 3)
-        font.SetWeight(wx.FONTWEIGHT_BOLD)
-        title.SetFont(font)
-        root.Add(title, 0, wx.ALL, 10)
+        self.header = PageHeader(
+            self, "数据总览",
+            subtitle="检查数据新鲜度、数据量，并就地触发更新",
+            actions=[("刷新", self.refresh, True)],
+        )
+        root.Add(self.header, 0, wx.EXPAND | wx.ALL, theme.PAD)
 
-        box = wx.StaticBoxSizer(wx.VERTICAL, self, "数据新鲜度")
-        self.freshness = wx.FlexGridSizer(rows=0, cols=3, vgap=6, hgap=16)
-        box.Add(self.freshness, 0, wx.EXPAND | wx.ALL, 8)
-        root.Add(box, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        row = wx.BoxSizer(wx.HORIZONTAL)
 
-        box2 = wx.StaticBoxSizer(wx.VERTICAL, self, "数据量")
-        self.counts = wx.FlexGridSizer(rows=0, cols=3, vgap=6, hgap=16)
-        box2.Add(self.counts, 0, wx.EXPAND | wx.ALL, 8)
-        root.Add(box2, 0, wx.EXPAND | wx.ALL, 10)
+        # ---- 数据新鲜度 ----
+        fresh_card = Card(self, "数据新鲜度", "绿色为最新，橙色表示需要更新")
+        self.freshness = wx.FlexGridSizer(rows=0, cols=3, vgap=10, hgap=20)
+        self.freshness.AddGrowableCol(0, 1)
+        fresh_card.add(self.freshness, 1, wx.EXPAND)
+        self._fresh_parent = fresh_card.body
+        row.Add(fresh_card, 1, wx.EXPAND | wx.RIGHT, theme.GAP)
 
-        box3 = wx.StaticBoxSizer(wx.VERTICAL, self, "快捷操作（后台执行，需要联网）")
-        hint = wx.StaticText(self, label="更新较慢，执行期间可以继续用其它页面；完成后会自动刷新状态。")
-        hint.SetForegroundColour(wx.Colour(120, 120, 120))
-        box3.Add(hint, 0, wx.ALL, 6)
+        # ---- 数据量 ----
+        count_card = Card(self, "数据量", "各表行数与磁盘占用")
+        self.counts = wx.FlexGridSizer(rows=0, cols=3, vgap=10, hgap=20)
+        self.counts.AddGrowableCol(0, 1)
+        count_card.add(self.counts, 1, wx.EXPAND)
+        self._count_parent = count_card.body
+        row.Add(count_card, 1, wx.EXPAND)
 
+        root.Add(row, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, theme.PAD)
+
+        # ---- 快捷操作 ----
+        action_card = Card(
+            self, "快捷操作",
+            "后台执行、需要联网，耗时较长；执行期间可以继续使用其它页面",
+        )
         buttons = wx.BoxSizer(wx.HORIZONTAL)
         for action in vm.available_updates():
-            button = wx.Button(self, label=action["label"])
-            button.Bind(wx.EVT_BUTTON, lambda _evt, key=action["key"]: self.on_update(key))
+            button = make_button(action_card.body, action["label"],
+                                 lambda _evt, key=action["key"]: self.on_update(key))
             button.SetToolTip(action["desc"])
-            buttons.Add(button, 0, wx.ALL, 4)
-        box3.Add(buttons, 0, wx.ALL, 4)
-        root.Add(box3, 0, wx.EXPAND | wx.ALL, 10)
-
-        refresh = wx.Button(self, label="刷新")
-        refresh.Bind(wx.EVT_BUTTON, lambda _evt: self.refresh())
-        root.Add(refresh, 0, wx.ALL, 10)
+            buttons.Add(button, 0, wx.RIGHT, 8)
+        action_card.add(buttons, 0, wx.EXPAND)
+        root.Add(action_card, 0, wx.EXPAND | wx.ALL, theme.PAD)
 
         self.SetSizer(root)
         self.refresh()
@@ -68,22 +75,25 @@ class DashboardPanel(wx.Panel):
         self.counts.Clear(delete_windows=True)
 
         for name, value, stale in status.report():
-            self._add_row(self.freshness, name, value, stale)
+            self._add_row(self.freshness, self._fresh_parent, name, value, stale)
 
         for table, rows in sorted(status.counts.items()):
-            self._add_row(self.counts, table, f"{rows:,}", False)
-        self._add_row(self.counts, "数据库大小", f"{status.db_size_mb:,.0f} MB", False)
-        self._add_row(self.counts, "原始件归档", f"{status.archive_size_mb:,.0f} MB", False)
+            self._add_row(self.counts, self._count_parent, table, f"{rows:,}", False)
+        self._add_row(self.counts, self._count_parent, "数据库大小",
+                      f"{status.db_size_mb:,.0f} MB", False)
+        self._add_row(self.counts, self._count_parent, "原始件归档",
+                      f"{status.archive_size_mb:,.0f} MB", False)
         self.Layout()
 
-    def _add_row(self, sizer: wx.FlexGridSizer, name: str, value: str, warn: bool):
-        label = wx.StaticText(self, label=name)
-        label.SetMinSize((150, -1))
-        text = wx.StaticText(self, label=str(value))
-        text.SetForegroundColour(wx.Colour(*(COLOUR_WARN if warn else COLOUR_OK)))
-        note = wx.StaticText(self, label="需要更新" if warn else "正常")
+    def _add_row(self, sizer: wx.FlexGridSizer, parent, name: str, value: str, warn: bool):
+        label = text_label(parent, name, colour=C.text)
+        label.SetMinSize((160, -1))
+        colour = C.warn if warn else C.ok
+        number = text_label(parent, str(value), mono=True, bold=True, colour=colour)
+        note = text_label(parent, "需要更新" if warn else "正常",
+                          size=theme.FONT_SMALL, colour=colour)
         sizer.Add(label, 0, wx.ALIGN_CENTER_VERTICAL)
-        sizer.Add(text, 0, wx.ALIGN_CENTER_VERTICAL)
+        sizer.Add(number, 0, wx.ALIGN_CENTER_VERTICAL)
         sizer.Add(note, 0, wx.ALIGN_CENTER_VERTICAL)
 
     # ------------------------------------------------------------------

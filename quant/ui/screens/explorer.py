@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import wx
 
-from quant.data import schema, store
+from quant.ui import theme
 from quant.ui import viewmodels as vm
-from quant.ui.widgets import BusyRunner, DataFrameGrid, ask_save_path, error_dialog, relayout
+from quant.ui.components import (Card, PageHeader, hint_label, make_button, style_checkbox,
+                                style_input, text_label)
+from quant.ui.theme import C
+from quant.ui.widgets import (BusyRunner, DataFrameGrid, ask_save_path, error_dialog,
+                             relayout)
 
 PAGE_SIZES = ["100", "200", "500", "1000", "2000"]
 
@@ -16,87 +20,107 @@ class ExplorerPanel(wx.Panel):
 
     def __init__(self, parent):
         super().__init__(parent)
+        self.SetBackgroundColour(wx.Colour(C.bg))
         self.runner = BusyRunner(self)
         self.page = 1
         self.total = 0
 
         root = wx.BoxSizer(wx.VERTICAL)
 
+        self.header = PageHeader(
+            self, "数据浏览器",
+            subtitle="浏览任意数据表、按条件过滤并导出",
+            actions=[("查询", lambda _evt: self.on_query(reset_page=True), True)],
+        )
+        root.Add(self.header, 0, wx.EXPAND | wx.ALL, theme.PAD)
+
         # ---- 查询条件 ----
-        top = wx.StaticBoxSizer(wx.HORIZONTAL, self, "查询条件")
-        top.Add(wx.StaticText(self, label="表"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
-        self.table_choice = wx.Choice(self, choices=list(vm.EXPLORER_TABLES))
+        query_card = Card(self, "查询条件")
+        body = query_card.body
+
+        line1 = wx.BoxSizer(wx.HORIZONTAL)
+        line1.Add(text_label(body, "数据表", colour=C.text_secondary), 0,
+                  wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.table_choice = style_input(wx.Choice(body, choices=list(vm.EXPLORER_TABLES)))
         self.table_choice.SetSelection(0)
         self.table_choice.Bind(wx.EVT_CHOICE, lambda _evt: self.on_table_changed())
-        top.Add(self.table_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
+        line1.Add(self.table_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
 
-        top.Add(wx.StaticText(self, label="代码"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
-        self.symbol_input = wx.TextCtrl(self, size=(160, -1))
+        line1.Add(text_label(body, "代码", colour=C.text_secondary), 0,
+                  wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.symbol_input = style_input(wx.TextCtrl(body, size=(200, -1)),
+                                        width=200)
         self.symbol_input.SetHint("多个用空格分隔，如 000001 600519")
-        top.Add(self.symbol_input, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
+        line1.Add(self.symbol_input, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
 
-        top.Add(wx.StaticText(self, label="日期"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
-        self.date_start = wx.TextCtrl(self, size=(110, -1))
+        line1.Add(text_label(body, "日期", colour=C.text_secondary), 0,
+                  wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.date_start = style_input(wx.TextCtrl(body, size=(110, -1)))
         self.date_start.SetHint("2010-01-01")
-        self.date_end = wx.TextCtrl(self, size=(110, -1))
+        self.date_end = style_input(wx.TextCtrl(body, size=(110, -1)))
         self.date_end.SetHint("2026-12-31")
-        top.Add(self.date_start, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 2)
-        top.Add(wx.StaticText(self, label="~"), 0, wx.ALIGN_CENTER_VERTICAL)
-        top.Add(self.date_end, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 2)
+        line1.Add(self.date_start, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        line1.Add(text_label(body, "~", colour=C.text_muted), 0, wx.ALIGN_CENTER_VERTICAL)
+        line1.Add(self.date_end, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
+        line1.AddStretchSpacer()
+        query_card.add(line1, 0, wx.EXPAND)
 
-        query_button = wx.Button(self, label="查询")
-        query_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_query(reset_page=True))
-        top.Add(query_button, 0, wx.ALL, 6)
-        root.Add(top, 0, wx.EXPAND | wx.ALL, 8)
-
-        # ---- 附加条件 ----
-        cond = wx.StaticBoxSizer(wx.HORIZONTAL, self, "附加条件（可选）")
-        self.column_choice = wx.Choice(self, choices=[])
-        self.op_choice = wx.Choice(self, choices=[">", ">=", "<", "<=", "=", "!=", "like"])
+        line2 = wx.BoxSizer(wx.HORIZONTAL)
+        line2.Add(text_label(body, "附加条件", colour=C.text_secondary), 0,
+                  wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.column_choice = style_input(wx.Choice(body, choices=[]))
+        self.op_choice = style_input(wx.Choice(body, choices=[">", ">=", "<", "<=", "=", "!=", "like"]))
         self.op_choice.SetSelection(1)
-        self.value_input = wx.TextCtrl(self, size=(120, -1))
-        cond.Add(self.column_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
-        cond.Add(self.op_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
-        cond.Add(self.value_input, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
-        clear = wx.Button(self, label="清空")
-        clear.Bind(wx.EVT_BUTTON, lambda _evt: self.value_input.SetValue(""))
-        cond.Add(clear, 0, wx.ALL, 4)
-        root.Add(cond, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
+        self.value_input = style_input(wx.TextCtrl(body, size=(140, -1)), width=140)
+        self.value_input.SetHint("数值或文本")
+        line2.Add(self.column_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        line2.Add(self.op_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        line2.Add(self.value_input, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 12)
+        line2.Add(make_button(body, "清空", lambda _evt: self.value_input.SetValue("")), 0,
+                  wx.ALIGN_CENTER_VERTICAL)
+        line2.AddStretchSpacer()
+        query_card.add_spacer(10)
+        query_card.add(line2, 0, wx.EXPAND)
 
-        # ---- 表格 ----
-        self.grid = DataFrameGrid(self)
-        root.Add(self.grid, 1, wx.EXPAND | wx.ALL, 8)
+        root.Add(query_card, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, theme.PAD)
 
-        # ---- 底部 ----
+        # ---- 结果 ----
+        result_card = Card(self, "结果")
+        self.grid = DataFrameGrid(result_card.body)
+        result_card.add(self.grid, 1, wx.EXPAND)
+
         bottom = wx.BoxSizer(wx.HORIZONTAL)
-        self.prev_button = wx.Button(self, label="上一页")
-        self.next_button = wx.Button(self, label="下一页")
-        self.prev_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_page(-1))
-        self.next_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_page(1))
-        bottom.Add(self.prev_button, 0, wx.ALL, 4)
-        bottom.Add(self.next_button, 0, wx.ALL, 4)
+        self.prev_button = make_button(result_card.body, "上一页", lambda _evt: self.on_page(-1))
+        self.next_button = make_button(result_card.body, "下一页", lambda _evt: self.on_page(1))
+        bottom.Add(self.prev_button, 0, wx.RIGHT, 8)
+        bottom.Add(self.next_button, 0, wx.RIGHT, 16)
 
-        bottom.Add(wx.StaticText(self, label="每页"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 12)
-        self.page_size_choice = wx.Choice(self, choices=PAGE_SIZES)
+        bottom.Add(text_label(result_card.body, "每页", colour=C.text_secondary), 0,
+                   wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.page_size_choice = style_input(wx.Choice(result_card.body, choices=PAGE_SIZES))
         self.page_size_choice.SetSelection(1)
         self.page_size_choice.Bind(wx.EVT_CHOICE, lambda _evt: self.on_query(reset_page=True))
-        bottom.Add(self.page_size_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
+        bottom.Add(self.page_size_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 16)
 
-        self.display_names = wx.CheckBox(self, label="中文列名")
+        self.display_names = style_checkbox(wx.CheckBox(result_card.body, label="中文列名"))
         self.display_names.Bind(wx.EVT_CHECKBOX, lambda _evt: self.render())
-        bottom.Add(self.display_names, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 12)
+        bottom.Add(self.display_names, 0, wx.ALIGN_CENTER_VERTICAL)
 
         bottom.AddStretchSpacer()
-        self.status = wx.StaticText(self, label="")
+        self.status = text_label(result_card.body, "", size=theme.FONT_SMALL,
+                                 colour=C.text_secondary)
         bottom.Add(self.status, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 12)
 
-        export_current = wx.Button(self, label="导出当前页")
-        export_current.Bind(wx.EVT_BUTTON, lambda _evt: self.on_export(limit_page=True))
-        bottom.Add(export_current, 0, wx.ALL, 4)
-        export_all = wx.Button(self, label="导出全部")
-        export_all.Bind(wx.EVT_BUTTON, lambda _evt: self.on_export(limit_page=False))
-        bottom.Add(export_all, 0, wx.ALL, 4)
-        root.Add(bottom, 0, wx.EXPAND | wx.ALL, 8)
+        export_current = make_button(result_card.body, "导出当前页",
+                                     lambda _evt: self.on_export(limit_page=True))
+        export_all = make_button(result_card.body, "导出全部",
+                                 lambda _evt: self.on_export(limit_page=False))
+        bottom.Add(export_current, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        bottom.Add(export_all, 0, wx.ALIGN_CENTER_VERTICAL)
+
+        result_card.add_spacer(10)
+        result_card.add(bottom, 0, wx.EXPAND)
+        root.Add(result_card, 1, wx.EXPAND | wx.ALL, theme.PAD)
 
         self.SetSizer(root)
         self.on_table_changed()
@@ -113,6 +137,8 @@ class ExplorerPanel(wx.Panel):
     def on_table_changed(self):
         """切换表时刷新列下拉框。"""
         def work():
+            from quant.data import store
+
             with store.open_db() as conn:
                 return vm.table_columns(conn, self.table)
 

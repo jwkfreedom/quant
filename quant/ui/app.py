@@ -1,8 +1,6 @@
 """主窗口与导航。
 
-```bat
-python -m quant ui
-```
+用法：python -m quant ui
 """
 
 from __future__ import annotations
@@ -22,12 +20,15 @@ except ImportError as exc:  # pragma: no cover - 依赖缺失时的友好提示
     ) from exc
 
 from quant import config  # noqa: E402
+from quant.ui import theme  # noqa: E402
+from quant.ui.components import SideNav, make_font, text_label  # noqa: E402
 from quant.ui.screens.backtest import BacktestPanel  # noqa: E402
 from quant.ui.screens.dashboard import DashboardPanel  # noqa: E402
 from quant.ui.screens.explorer import ExplorerPanel  # noqa: E402
 from quant.ui.screens.screener import ScreenerPanel  # noqa: E402
 from quant.ui.screens.settings import SettingsPanel  # noqa: E402
 from quant.ui.screens.stock_detail import StockDetailPanel  # noqa: E402
+from quant.ui.theme import C  # noqa: E402
 
 PAGES = [
     ("数据总览", DashboardPanel),
@@ -38,38 +39,74 @@ PAGES = [
     ("设置/关于", SettingsPanel),
 ]
 
+NAV_WIDTH = 190
+
 
 class MainFrame(wx.Frame):
-    """主窗口：左侧导航 + 右侧页面。"""
+    """主窗口：左侧自绘导航 + 右侧页面（Simplebook，无页签）。"""
 
     def __init__(self, parent=None):
         super().__init__(parent, title="quant —— 选股研究与策略回测", size=(1440, 900))
+        self.SetBackgroundColour(wx.Colour(C.bg))
 
-        # 注意：wxPython 里的类名是小写 b 的 Listbook（不是 ListBook）
         # 注意顺序：状态栏必须**先**创建，页面在构造时就会调用 set_status
         self.CreateStatusBar(2)
-        self.SetStatusWidths([-1, 320])
+        self.SetStatusWidths([-1, 340])
+        self._style_status_bar()
         self._build_menu()
 
-        self.book = wx.Listbook(self, style=wx.LB_LEFT)
+        root = wx.BoxSizer(wx.HORIZONTAL)
+
+        # ---- 左侧导航 ----
+        side = wx.Panel(self)
+        side.SetBackgroundColour(wx.Colour(C.bg))
+        side.SetMinSize((NAV_WIDTH, -1))
+        side_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        brand = text_label(side, "quant", size=15, bold=True, colour=C.text)
+        side_sizer.Add(brand, 0, wx.LEFT | wx.TOP, theme.PAD + 4)
+        side_sizer.Add(text_label(side, "选股研究 · 策略回测", size=theme.FONT_SMALL,
+                                  colour=C.text_muted), 0, wx.LEFT | wx.TOP | wx.BOTTOM,
+                       theme.PAD + 4)
+        side_sizer.AddSpacer(6)
+
+        self.nav = SideNav(side, [title for title, _ in PAGES], width=NAV_WIDTH,
+                           on_select=self._on_nav_select)
+        side_sizer.Add(self.nav, 0, wx.EXPAND)
+        side_sizer.AddStretchSpacer()
+        side.SetSizer(side_sizer)
+        root.Add(side, 0, wx.EXPAND)
+
+        # ---- 右侧页面 ----
+        self.book = wx.Simplebook(self)
+        self.book.SetBackgroundColour(wx.Colour(C.bg))
         self.panels: dict[str, wx.Window] = {}
         for title, panel_class in PAGES:
             panel = panel_class(self.book)
             self.book.AddPage(panel, title)
             self.panels[title] = panel
-
         self.book.SetSelection(0)
-        self.book.GetListView().SetMinSize((170, -1))
+        root.Add(self.book, 1, wx.EXPAND)
 
-        sizer = wx.BoxSizer(wx.VERTICAL)
-        sizer.Add(self.book, 1, wx.EXPAND)
-        self.SetSizer(sizer)
+        self.SetSizer(root)
 
         self.set_status("就绪")
         self.SetStatusText(f"数据库 {config.DB_PATH}", 1)
         self.Centre()
 
     # ------------------------------------------------------------------
+    # 外观
+    # ------------------------------------------------------------------
+    def _style_status_bar(self):
+        bar = self.GetStatusBar()
+        if bar is None:
+            return
+        bar.SetBackgroundColour(wx.Colour(C.status_bg))
+        bar.SetForegroundColour(wx.Colour(C.text_secondary))
+        bar.SetFont(make_font(theme.FONT_SMALL))
+        for index in range(bar.GetFieldsCount()):
+            bar.SetStatusText("", index)
+
     def _build_menu(self):
         menu_bar = wx.MenuBar()
 
@@ -100,6 +137,25 @@ class MainFrame(wx.Frame):
             event.Skip()
 
     # ------------------------------------------------------------------
+    # 页面切换
+    # ------------------------------------------------------------------
+    @property
+    def current_title(self) -> str:
+        index = self.book.GetSelection()
+        return self.book.GetPageText(index) if index >= 0 else ""
+
+    def switch_page(self, title: str) -> bool:
+        """切换到指定页面（导航与 jump_to 都走这里）。"""
+        if title not in self.panels:
+            return False
+        index = list(self.panels).index(title)
+        self.book.SetSelection(index)
+        self.nav.SetSelection(index)
+        return True
+
+    def _on_nav_select(self, index: int, title: str):
+        self.book.SetSelection(index)
+
     def set_status(self, text: str):
         """状态栏左侧文本（后台任务会调用它）。
 
@@ -109,7 +165,7 @@ class MainFrame(wx.Frame):
             self.SetStatusText(str(text), 0)
 
     def refresh_current(self):
-        panel = self.panels.get(self.book.GetPageText(self.book.GetSelection()))
+        panel = self.panels.get(self.current_title)
         if panel is not None and hasattr(panel, "refresh"):
             panel.refresh()
         else:
@@ -120,12 +176,13 @@ class MainFrame(wx.Frame):
         page = self.panels.get(title)
         if page is None:
             return
-        self.book.SetSelection(list(self.panels).index(title))
+        self.switch_page(title)
         if kwargs and hasattr(page, "on_load"):
             symbol = kwargs.get("symbol")
             if symbol:
                 page.on_load(symbol)
 
+    # ------------------------------------------------------------------
     def on_about(self):
         from quant import __version__
 
@@ -157,7 +214,7 @@ def run(argv=None) -> int:
     frame = MainFrame()
     frame.Show()
 
-    # 支持 `quant ui 000001` 直接打开某只股票
+    # 支持 quant ui 000001 直接打开某只股票
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0].isdigit():
         frame.jump_to("个股分析", symbol=args[0])

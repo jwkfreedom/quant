@@ -18,19 +18,18 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
+from quant.ui import theme  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
-#: 中文字体（找不到就退回默认，图形仍可显示，只是中文变方框）
-for _font in ("Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Arial Unicode MS"):
-    if any(_font.lower() in f.name.lower() for f in matplotlib.font_manager.fontManager.ttflist):
-        plt.rcParams["font.sans-serif"] = [_font]
-        break
-plt.rcParams["axes.unicode_minus"] = False
+#: 统一图表主题：中文字体、配色、浅网格、去掉上/右框线（见 theme.apply_matplotlib_theme）
+theme.apply_matplotlib_theme()
 
 
 def _empty_figure(message: str = "暂无数据") -> plt.Figure:
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.text(0.5, 0.5, message, ha="center", va="center", fontsize=12, color="#888")
+    ax.text(0.5, 0.5, message, ha="center", va="center", fontsize=11,
+            color=theme.C.text_muted)
     ax.set_axis_off()
     fig.tight_layout()
     return fig

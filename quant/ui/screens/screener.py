@@ -7,7 +7,11 @@ import inspect
 import wx
 
 from quant.filter import available_filters, get_filter_class
+from quant.ui import theme
 from quant.ui import viewmodels as vm
+from quant.ui.components import (Card, PageHeader, hint_label, make_button, style_checkbox,
+                                style_input, text_label)
+from quant.ui.theme import C
 from quant.ui.widgets import (
     BusyRunner,
     DataFrameGrid,
@@ -30,6 +34,8 @@ GROUPS: list[tuple[str, list[str]]] = [
 DEFAULT_COLUMNS = ["symbol", "name", "close_org", "market_cap", "pe", "pe_pct_10y",
                    "pb", "pb_pct_10y", "ps", "roe", "debt_ratio", "season_income_growth"]
 
+LEFT_WIDTH = 470
+
 
 class ConditionRow:
     """一个过滤器的界面行：复选框 + 参数输入框。
@@ -44,34 +50,36 @@ class ConditionRow:
         signature = inspect.signature(cls.__init__)
         self.fields: list[tuple[str, wx.TextCtrl, object]] = []
 
-        self.checkbox = wx.CheckBox(panel, label=name)
+        line = wx.BoxSizer(wx.HORIZONTAL)
+
+        self.checkbox = style_checkbox(wx.CheckBox(panel, label=name))
         self.checkbox.SetMinSize((150, -1))
         self.checkbox.SetToolTip(getattr(cls, "description", "") + "\n（右键查看详细说明）")
         if on_help_requested is not None:
             self.checkbox.Bind(wx.EVT_RIGHT_UP,
                                lambda _evt, n=name: on_help_requested(n))
-        # 注意：sizer 是垂直 BoxSizer，不能带 ALIGN_CENTER_VERTICAL（wx 会断言失败）
-        sizer.Add(self.checkbox, 0, wx.ALL, 3)
+        line.Add(self.checkbox, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
 
-        params_sizer = wx.BoxSizer(wx.HORIZONTAL)
         for param_name, param in signature.parameters.items():
             if param_name == "self":
                 continue
             default = "" if param.default is inspect.Parameter.empty else param.default
-            label = wx.StaticText(panel, label=f"{param_name}")
-            label.SetForegroundColour(wx.Colour(120, 120, 120))
-            control = wx.TextCtrl(panel, size=(70, -1), value=str(default) if default != "" else "")
-            params_sizer.Add(label, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4)
-            params_sizer.Add(control, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 2)
+            label = text_label(panel, param_name, size=theme.FONT_SMALL, colour=C.text_muted)
+            control = wx.TextCtrl(panel, size=(64, -1), value=str(default) if default != "" else "")
+            style_input(control)
+            line.Add(label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
+            line.Add(control, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
             self.fields.append((param_name, control, default))
-        sizer.Add(params_sizer, 1, wx.EXPAND)
+
+        line.AddStretchSpacer()
+        sizer.Add(line, 0, wx.EXPAND | wx.BOTTOM, 8)
 
     @property
     def enabled(self) -> bool:
         return self.checkbox.GetValue()
 
     def spec(self) -> str | None:
-        """生成 `name:k=v` 描述；未启用返回 None。"""
+        """生成 name:k=v 描述；未启用返回 None。"""
         if not self.enabled:
             return None
         parts = []
@@ -88,17 +96,28 @@ class ScreenerPanel(wx.Panel):
 
     def __init__(self, parent):
         super().__init__(parent)
+        self.SetBackgroundColour(wx.Colour(C.bg))
         self.runner = BusyRunner(self)
         self.rows: list[ConditionRow] = []
 
-        root = wx.BoxSizer(wx.HORIZONTAL)
+        root = wx.BoxSizer(wx.VERTICAL)
+
+        self.header = PageHeader(
+            self, "选股筛选",
+            subtitle="勾选条件后点「运行选股」，双击结果行可跳到个股分析",
+            actions=[("筛选说明", lambda _evt: self.on_help(), False),
+                     ("运行选股", lambda _evt: self.on_run(), True)],
+        )
+        root.Add(self.header, 0, wx.EXPAND | wx.ALL, theme.PAD)
+
+        columns = wx.BoxSizer(wx.HORIZONTAL)
 
         # ---------------- 左侧：条件 ----------------
-        # 注意：StaticBoxSizer 的父窗口必须与 SetSizer 的面板一致，
-        # 里面的控件也要用同一个面板做父窗口，否则 wx 会断言失败。
-        left_panel = wx.Panel(self)
-        left_box = wx.StaticBoxSizer(wx.VERTICAL, left_panel, "筛选条件")
-        self.conditions = wx.ScrolledWindow(left_panel, style=wx.VSCROLL)
+        left_card = Card(self, "筛选条件", "右键条件名可查看该条件的详细说明")
+        left_card.SetMinSize((LEFT_WIDTH, -1))
+
+        self.conditions = wx.ScrolledWindow(left_card.body, style=wx.VSCROLL)
+        self.conditions.SetBackgroundColour(wx.Colour(C.card))
         self.conditions.SetScrollRate(0, 12)
         cond_sizer = wx.BoxSizer(wx.VERTICAL)
 
@@ -107,96 +126,85 @@ class ScreenerPanel(wx.Panel):
             present = [n for n in names if n in registered]
             if not present:
                 continue
-            caption = wx.StaticText(self.conditions, label=f"▼ {group_title}")
-            font = caption.GetFont()
-            font.SetWeight(wx.FONTWEIGHT_BOLD)
-            caption.SetFont(font)
-            cond_sizer.Add(caption, 0, wx.ALL, 4)
+            cond_sizer.Add(text_label(self.conditions, group_title, size=theme.FONT_SMALL,
+                                      bold=True, colour=C.text_secondary),
+                           0, wx.TOP | wx.BOTTOM, 6)
             for name in present:
                 self.rows.append(ConditionRow(self.conditions, cond_sizer, name,
                                               on_help_requested=self.on_filter_help))
 
         others = sorted(registered - {n for _g, names in GROUPS for n in names})
         if others:
-            caption = wx.StaticText(self.conditions, label="▼ 其它")
-            cond_sizer.Add(caption, 0, wx.ALL, 4)
+            cond_sizer.Add(text_label(self.conditions, "其它", size=theme.FONT_SMALL,
+                                      bold=True, colour=C.text_secondary),
+                           0, wx.TOP | wx.BOTTOM, 6)
             for name in others:
                 self.rows.append(ConditionRow(self.conditions, cond_sizer, name,
                                               on_help_requested=self.on_filter_help))
 
         self.conditions.SetSizer(cond_sizer)
-        left_box.Add(self.conditions, 1, wx.EXPAND | wx.ALL, 6)
+        left_card.add(self.conditions, 1, wx.EXPAND)
 
         # 方案管理
+        left_card.add_spacer(10)
         plan = wx.BoxSizer(wx.HORIZONTAL)
-        self.screen_choice = wx.Choice(left_panel, choices=vm.list_screens())
-        plan.Add(self.screen_choice, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 3)
-        load_button = wx.Button(left_panel, label="载入")
-        load_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_load())
-        save_button = wx.Button(left_panel, label="保存为…")
-        save_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_save())
-        delete_button = wx.Button(left_panel, label="删除")
-        delete_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_delete())
-        for button in (load_button, save_button, delete_button):
-            plan.Add(button, 0, wx.ALL, 3)
-        left_box.Add(plan, 0, wx.EXPAND | wx.ALL, 4)
+        plan.Add(text_label(left_card.body, "方案", colour=C.text_secondary), 0,
+                 wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.screen_choice = style_input(wx.Choice(left_card.body, choices=vm.list_screens()))
+        plan.Add(self.screen_choice, 1, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        plan.Add(make_button(left_card.body, "载入", lambda _evt: self.on_load()), 0,
+                 wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        plan.Add(make_button(left_card.body, "保存为…", lambda _evt: self.on_save()), 0,
+                 wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        plan.Add(make_button(left_card.body, "删除", lambda _evt: self.on_delete()), 0,
+                 wx.ALIGN_CENTER_VERTICAL)
+        left_card.add(plan, 0, wx.EXPAND)
 
-        # 快照日期 + 运行
+        # 快照日期
+        left_card.add_spacer(10)
         run_row = wx.BoxSizer(wx.HORIZONTAL)
-        self.as_of = wx.TextCtrl(left_panel, size=(110, -1))
-        self.as_of.SetHint("YYYYMMDD")
-        run_row.Add(wx.StaticText(left_panel, label="快照日期"), 0,
-                    wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4)
-        run_row.Add(self.as_of, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 4)
-        run_button = wx.Button(left_panel, label="运行选股")
-        run_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_run())
-        run_row.Add(run_button, 0, wx.ALL, 4)
-        reset_button = wx.Button(left_panel, label="全部清空")
-        reset_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_reset())
-        run_row.Add(reset_button, 0, wx.ALL, 4)
+        run_row.Add(text_label(left_card.body, "快照日期", colour=C.text_secondary), 0,
+                    wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.as_of = style_input(wx.TextCtrl(left_card.body, size=(120, -1)))
+        self.as_of.SetHint("YYYYMMDD，留空取最新")
+        run_row.Add(self.as_of, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 12)
+        run_row.Add(make_button(left_card.body, "全部清空", lambda _evt: self.on_reset()), 0,
+                    wx.ALIGN_CENTER_VERTICAL)
+        left_card.add(run_row, 0, wx.EXPAND)
 
-        help_button = wx.Button(left_panel, label="说明")
-        help_button.SetToolTip("查看每个筛选条件的参数含义、取值范围和例子")
-        help_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_help())
-        run_row.Add(help_button, 0, wx.ALL, 4)
-        left_box.Add(run_row, 0, wx.EXPAND | wx.ALL, 4)
-
-        left_panel.SetSizer(left_box)
-        left_panel.SetMinSize((430, -1))
-        root.Add(left_panel, 0, wx.EXPAND | wx.ALL, 6)
+        columns.Add(left_card, 0, wx.EXPAND | wx.RIGHT, theme.GAP)
 
         # ---------------- 右侧：结果 ----------------
-        right = wx.BoxSizer(wx.VERTICAL)
+        result_card = Card(self)
+        body = result_card.body
 
         head = wx.BoxSizer(wx.HORIZONTAL)
-        self.summary = wx.StaticText(self, label="尚未运行")
-        font = self.summary.GetFont()
-        font.SetWeight(wx.FONTWEIGHT_BOLD)
-        self.summary.SetFont(font)
-        head.Add(self.summary, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
+        self.summary = text_label(body, "尚未运行", size=theme.FONT_CARD_TITLE,
+                                  bold=True, colour=C.text)
+        head.Add(self.summary, 1, wx.ALIGN_CENTER_VERTICAL)
+        head.Add(make_button(body, "复制命令行", lambda _evt: self.on_copy_command()), 0,
+                 wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        head.Add(make_button(body, "导出 CSV", lambda _evt: self.on_export()), 0,
+                 wx.ALIGN_CENTER_VERTICAL)
+        result_card.add(head, 0, wx.EXPAND)
+        result_card.add_spacer(6)
 
-        copy_button = wx.Button(self, label="复制命令行")
-        copy_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_copy_command())
-        export_button = wx.Button(self, label="导出 CSV")
-        export_button.Bind(wx.EVT_BUTTON, lambda _evt: self.on_export())
-        head.Add(copy_button, 0, wx.ALL, 4)
-        head.Add(export_button, 0, wx.ALL, 4)
-        right.Add(head, 0, wx.EXPAND)
+        self.steps = text_label(body, "", size=theme.FONT_SMALL, colour=C.text_secondary)
+        self.steps.Wrap(900)
+        result_card.add(self.steps, 0, wx.EXPAND)
+        result_card.add_spacer(8)
 
-        self.steps = wx.StaticText(self, label="")
-        self.steps.SetForegroundColour(wx.Colour(90, 90, 90))
-        right.Add(self.steps, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
-
-        self.grid = DataFrameGrid(self)
+        self.grid = DataFrameGrid(body)
         self.grid.on_row_activated = self.jump_to_stock
         self.grid.on_context_menu = self.build_context_menu
-        right.Add(self.grid, 1, wx.EXPAND | wx.ALL, 6)
+        result_card.add(self.grid, 1, wx.EXPAND)
+        result_card.add_spacer(6)
+        result_card.add(hint_label(body, "提示：双击某一行可以跳到「个股分析」查看图表"),
+                        0, wx.EXPAND)
 
-        hint = wx.StaticText(self, label="提示：双击某一行可以跳到「个股分析」查看图表")
-        hint.SetForegroundColour(wx.Colour(120, 120, 120))
-        right.Add(hint, 0, wx.ALL, 6)
+        columns.Add(result_card, 1, wx.EXPAND)
+        root.Add(columns, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, theme.PAD)
 
-        root.Add(right, 1, wx.EXPAND | wx.ALL, 6)
         self.SetSizer(root)
         self._result = None
 
