@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>quant UI 效果稿</title>
+<style>
+  /* ===== 设计规范（与 scripts/ui_style_demo.py 的 C 类一一对应） ===== */
+  :root {
+    --bg:#F5F6F8; --card:#FFFFFF; --border:#E5E7EB; --divider:#F1F2F4;
+    --text:#111827; --text2:#6B7280; --muted:#9CA3AF;
+    --primary:#2563EB; --primary-hover:#1D4ED8; --primary-light:#EFF4FF;
+    --up:#D93F3F; --down:#2E9E5B;
+    --ok:#047857; --ok-bg:#ECFDF5; --warn:#B45309; --warn-bg:#FFFBEB;
+    --thead:#F9FAFB; --talt:#FAFBFC; --tline:#EEF0F3;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.6 "Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .app { display:flex; height:100vh; }
+
+  /* 左侧导航 */
+  .nav { width:190px; padding:10px 12px; flex:0 0 190px; }
+  .nav a {
+    display:flex; align-items:center; height:42px; margin-bottom:4px;
+    padding-left:14px; border-radius:8px; position:relative;
+    color:var(--text2); text-decoration:none; font-size:14px;
+  }
+  .nav a:hover { background:#EFF1F5; }
+  .nav a.active { background:var(--primary-light); color:var(--primary); font-weight:600; }
+  .nav a.active::before {
+    content:""; position:absolute; left:4px; top:11px; width:3px; height:20px;
+    border-radius:2px; background:var(--primary);
+  }
+
+  /* 右侧主区 */
+  .main { flex:1; min-width:0; display:flex; flex-direction:column; padding:16px; gap:12px; }
+  .topbar { display:flex; align-items:center; gap:8px; }
+  .topbar h1 { font-size:22px; font-weight:700; margin:0 14px 0 4px; }
+  .badge { font-size:12px; line-height:23px; height:23px; padding:0 11px; border-radius:12px; }
+  .badge.ok { color:var(--ok); background:var(--ok-bg); }
+  .badge.warn { color:var(--warn); background:var(--warn-bg); }
+  .spacer { flex:1; }
+  button {
+    height:34px; padding:0 16px; border-radius:6px; font-size:14px; cursor:pointer;
+    font-family:inherit; transition:background .12s,border-color .12s;
+  }
+  button.ghost { background:var(--card); border:1px solid var(--border); color:var(--text); }
+  button.ghost:hover { background:#EDF1F7; border-color:#CBD5E1; }
+  button.primary { background:var(--primary); border:1px solid var(--primary); color:#fff; font-weight:600; }
+  button.primary:hover { background:var(--primary-hover); border-color:var(--primary-hover); }
+
+  /* 卡片 */
+  .row { display:flex; gap:12px; flex:1; min-height:0; }
+  .card {
+    background:var(--card); border:1px solid var(--border); border-radius:10px;
+    padding:14px 16px 16px; display:flex; flex-direction:column; min-height:0;
+  }
+  .card h2 { font-size:16px; font-weight:600; margin:0; }
+  .card .sub { font-size:12px; color:var(--text2); margin:2px 0 14px; }
+  .card.cond { flex:0 0 340px; }
+  .card.result { flex:1; min-width:0; }
+
+  .cond-item { display:flex; align-items:center; height:30px; margin-bottom:12px; gap:9px; }
+  .box {
+    width:15px; height:15px; border:1.5px solid var(--muted); border-radius:3px;
+    flex:0 0 15px; position:relative;
+  }
+  .box.on { background:var(--primary); border-color:var(--primary); }
+  .box.on::after {
+    content:""; position:absolute; left:4px; top:1px; width:4px; height:8px;
+    border:2px solid #fff; border-top:0; border-left:0; transform:rotate(42deg);
+  }
+  .cond-item .val { margin-left:auto; font:12px Consolas,monospace; color:var(--text2); }
+
+  /* 表格 */
+  .table { flex:1; overflow:hidden; }
+  .tr { display:flex; align-items:center; height:34px; border-bottom:1px solid var(--tline); }
+  .tr.head { height:34px; background:var(--thead); color:var(--text2); font-size:12px; font-weight:600; }
+  .tr.body { height:30px; font-size:13px; }
+  .tr.body:nth-child(even) { background:var(--talt); }
+  .tr:hover { background:var(--primary-light); }
+  .td { padding:0 10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .td.num { font-family:Consolas,monospace; text-align:right; }
+  .mono { font-family:Consolas,monospace; }
+  .up { color:var(--up); } .down { color:var(--down); }
+  .w1 { flex:0 0 78px; } .w2 { flex:1 1 auto; } .w3 { flex:0 0 74px; }
+  .w4 { flex:0 0 60px; } .w5 { flex:0 0 60px; } .w6 { flex:0 0 70px; } .w7 { flex:0 0 74px; }
+
+  .statusbar {
+    height:26px; background:#ECEFF3; color:var(--text2); font-size:12px;
+    display:flex; align-items:center; padding:0 12px;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="nav">
+    <a class="active" href="#">数据总览</a>
+    <a href="#">选股筛选</a>
+    <a href="#">个股分析</a>
+    <a href="#">策略回测</a>
+    <a href="#">数据浏览器</a>
+    <a href="#">设置</a>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <h1>选股筛选</h1>
+      <span class="badge ok">行情 2026-10-14</span>
+      <span class="badge warn">财务 2026-09-30</span>
+      <span class="spacer"></span>
+      <button class="ghost">筛选说明</button>
+      <button class="primary">运行选股</button>
+    </div>
+
+    <div class="row">
+      <section class="card cond">
+        <h2>筛选条件</h2>
+        <p class="sub">勾选后点「运行选股」</p>
+        <div class="cond-item"><span class="box on"></span>剔除 ST / 退市</div>
+        <div class="cond-item"><span class="box on"></span>上市满 N 日<span class="val">250</span></div>
+        <div class="cond-item"><span class="box on"></span>PE(TTM)<span class="val">0 ~ 20</span></div>
+        <div class="cond-item"><span class="box on"></span>PE 历史分位<span class="val">近10年 ≤ 10%</span></div>
+        <div class="cond-item"><span class="box on"></span>ROE<span class="val">≥ 8%</span></div>
+        <div class="cond-item"><span class="box"></span>毛利率<span class="val">≥ 20%</span></div>
+      </section>
+
+      <section class="card result">
+        <h2>结果</h2>
+        <p class="sub">共 160 只　用时 1.8 秒</p>
+        <div class="table">
+          <div class="tr head">
+            <div class="td w1">代码</div><div class="td w2">名称</div>
+            <div class="td num w3">收盘</div><div class="td num w4">PB</div>
+            <div class="td num w5">PE</div><div class="td num w6">PE分位</div>
+            <div class="td num w7">涨跌幅</div>
+          </div>
+          <div class="tr body"><div class="td w1 mono">605118</div><div class="td w2">力鼎光电</div><div class="td num w3">14.80</div><div class="td num w4">3.70</div><div class="td num w5">19.76</div><div class="td num w6">8%</div><div class="td num w7 up">+2.31%</div></div>
+          <div class="tr body"><div class="td w1 mono">600105</div><div class="td w2">永鼎股份</div><div class="td num w3">5.48</div><div class="td num w4">2.30</div><div class="td num w5">19.35</div><div class="td num w6">12%</div><div class="td num w7 down">-0.72%</div></div>
+          <div class="tr body"><div class="td w1 mono">300444</div><div class="td w2">双杰电气</div><div class="td num w3">7.40</div><div class="td num w4">9.12</div><div class="td num w5">19.04</div><div class="td num w6">15%</div><div class="td num w7 up">+1.09%</div></div>
+          <div class="tr body"><div class="td w1 mono">300743</div><div class="td w2">天地数码</div><div class="td num w3">14.08</div><div class="td num w4">3.25</div><div class="td num w5">18.85</div><div class="td num w6">6%</div><div class="td num w7 up">+4.44%</div></div>
+          <div class="tr body"><div class="td w1 mono">300910</div><div class="td w2">瑞丰新材</div><div class="td num w3">42.45</div><div class="td num w4">3.81</div><div class="td num w5">18.17</div><div class="td num w6">9%</div><div class="td num w7 down">-1.55%</div></div>
+          <div class="tr body"><div class="td w1 mono">603871</div><div class="td w2">嘉友国际</div><div class="td num w3">17.23</div><div class="td num w4">3.62</div><div class="td num w5">17.99</div><div class="td num w6">11%</div><div class="td num w7 up">+0.35%</div></div>
+          <div class="tr body"><div class="td w1 mono">002749</div><div class="td w2">国光股份</div><div class="td num w3">8.91</div><div class="td num w4">2.86</div><div class="td num w5">17.62</div><div class="td num w6">7%</div><div class="td num w7 up">+0.68%</div></div>
+          <div class="tr body"><div class="td w1 mono">601218</div><div class="td w2">吉鑫科技</div><div class="td num w3">4.12</div><div class="td num w4">1.94</div><div class="td num w5">17.48</div><div class="td num w6">13%</div><div class="td num w7 down">-2.10%</div></div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+<div class="statusbar">就绪 · 数据库 data/quant.db · 5,322 只 · 13,814,214 行行情</div>
+</body>
+</html>
