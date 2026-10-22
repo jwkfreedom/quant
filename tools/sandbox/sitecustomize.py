@@ -40,3 +40,15 @@ if os.environ.get("DSH_SESSION_ID"):
     tempfile.mkdtemp = _mkdtemp
     # chmod 在沙箱中会被拒绝，TemporaryDirectory 依赖它做权限收紧
     tempfile._resetperms = lambda path: None
+
+    # pytest 的 tmp 插件用 os.makedirs(mode=0o700) 建 basetemp，
+    # 建完之后连自己都列不出目录内容（PermissionError），收尾时必然崩。
+    # 这里统一把 0o700 放宽成 0o777。
+    _real_mkdir = os.mkdir
+
+    def _mkdir(path, mode=0o777, *args, **kwargs):
+        if mode & 0o077 == 0 and mode & 0o700 == 0o700:
+            mode = 0o777
+        return _real_mkdir(path, mode, *args, **kwargs)
+
+    os.mkdir = _mkdir

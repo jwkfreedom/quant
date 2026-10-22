@@ -489,6 +489,344 @@ def cmd_backtest(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# 资产管理（portfolio-*）
+# --------------------------------------------------------------------------
+def _portfolio_ctx():
+    """打开资产库并保证表结构存在。"""
+    from contextlib import contextmanager
+
+    from quant.portfolio import Portfolio, open_db, store
+
+    @contextmanager
+    def _ctx():
+        with open_db() as conn:
+            store.ensure_schema(conn)
+            yield conn, Portfolio(conn)
+
+    return _ctx()
+
+
+def _print_table(frame, columns=None, limit=None, empty="（无数据）") -> None:
+    """打印 DataFrame（终端友好）。"""
+    if frame is None or len(frame) == 0:
+        print(empty)
+        return
+    view = frame if columns is None else frame[[c for c in columns if c in frame.columns]]
+    if limit:
+        view = view.head(limit)
+    print(view.to_string(index=False))
+
+
+def _find_account(book, accounts, *, account_id=None, account_name=None):
+    """按 id 或名称定位资金账户。"""
+    from quant.portfolio import schema
+
+    if account_id is not None:
+        row = book.conn.execute(
+            f"SELECT * FROM {schema.TABLE_ACCOUNT} WHERE id = ?", (account_id,)
+        ).fetchone()
+        if row is None:
+            raise SystemExit(f"资金账户不存在: {account_id}")
+        return dict(row)
+
+    matches = [a for a in accounts if a["name"] == account_name]
+    if not matches:
+        raise SystemExit(f"找不到资金账户: {account_name}")
+    if len(matches) > 1:
+        ids = ", ".join(f"{a['id']}={a['name']}" for a in matches)
+        raise SystemExit(f"有多个同名账户，请改用 --account-id：{ids}")
+    return matches[0]
+
+
+def _resolve_account(book, args):
+    """命令行里统一用 --account 名称或 --account-id。"""
+    from quant.portfolio import store
+
+    return _find_account(book, store.list_accounts(book.conn),
+                         account_id=getattr(args, "account_id", None),
+                         account_name=getattr(args, "account", None))
+
+
+def cmd_portfolio_init(_args: argparse.Namespace) -> int:
+    """建资产库（幂等）。"""
+    from quant.portfolio import init_db
+
+    path = init_db()
+    print(f"资产库就绪：{path}")
+    return 0
+
+
+def cmd_portfolio_owner(args: argparse.Namespace) -> int:
+    from quant.portfolio import store
+
+    with _portfolio_ctx() as (conn, book):
+        if args.add:
+            owner_id = book.create_owner(args.add, note=args.note or "")
+            print(f"已新建资产账户：{args.add}（id={owner_id}）")
+        if args.rename:
+            old, _, new = args.rename.partition(":")
+            target = store.find_owner(conn, old)
+            if target is None:
+                raise SystemExit(f"找不到资产账户: {old}")
+            store.update_owner(conn, target["id"], name=new)
+            print(f"已改名：{old} -> {new}")
+        if args.delete:
+            target = store.find_owner(conn, args.delete)
+            if target is None:
+                raise SystemExit(f"找不到资产账户: {args.delete}")
+            store.delete_owner(conn, target["id"])
+            print(f"已删除资产账户：{args.delete}（其下资金账户与流水一并删除）")
+
+        owners = store.list_owners(conn)
+        print(f"\n共 {len(owners)} 个资产账户：")
+        for owner in owners:
+            accounts = store.list_accounts(conn, owner["id"])
+            print(f"  [{owner['id']}] {owner['name']}  —— {len(accounts)} 个资金账户")
+            for account in accounts:
+                print(f"      [{account['id']}] {account['name']} "
+                      f"（{account['currency']}，{account['account_type']}）")
+    return 0
+
+
+def cmd_portfolio_account(args: argparse.Namespace) -> int:
+    from quant.portfolio import schema, store
+
+    with _portfolio_ctx() as (conn, book):
+        if args.add:
+            owner = store.find_owner(conn, args.owner or "")
+            if owner is None:
+                raise SystemExit(f"找不到资产账户: {args.owner}（先用 portfolio-owner --add 创建）")
+            account_id = book.add_account(owner["id"], args.add,
+                                          account_type=args.type, currency=args.currency,
+                                          note=args.note or "")
+            print(f"已新建资金账户：{args.add}（id={account_id}，{args.currency}）")
+        if args.delete:
+            account = _find_account(book, store.list_accounts(conn), account_id=args.delete)
+            store.delete_account(conn, account["id"])
+            print(f"已删除资金账户：{account['name']}（持仓与流水一并删除）")
+        if args.rename:
+            old, _, new = args.rename.partition(":")
+            account = _find_account(book, store.list_accounts(conn), account_name=old)
+            store.update_account(conn, account["id"], name=new)
+            print(f"已改名：{old} -> {new}")
+
+        accounts = store.list_accounts(conn)
+        print(f"\n共 {len(accounts)} 个资金账户：")
+        for account in accounts:
+            cash = book.cash_balance(account["id"])
+            owner = store.get_owner(conn, account["owner_id"])
+            type_name = schema.ACCOUNT_TYPE_NAMES.get(account["account_type"], "")
+            print(f"  [{account['id']}] {owner['name'] if owner else '?'} / {account['name']}"
+                  f"  {account['currency']}  {type_name}  现金 {cash:,.2f}")
+    return 0
+
+
+def _trade_args(args) -> dict:
+    return {
+        "kind": args.kind,
+        "market": args.market,
+        "symbol": args.symbol,
+        "name": args.name or "",
+        "trade_date": args.date,
+        "note": args.note or "",
+    }
+
+
+def cmd_portfolio_buy(args: argparse.Namespace) -> int:
+    with _portfolio_ctx() as (_conn, book):
+        account = _resolve_account(book, args)
+        result = book.buy(account["id"], quantity=args.quantity, price=args.price,
+                          fee=args.fee, risk=args.risk, **_trade_args(args))
+        print(f"买入成功：{args.symbol} 持仓 {result['quantity']:,.2f} "
+              f"成本 {result['cost_price']:,.4f}")
+        print(f"现金余额：{result['cash']:,.2f}")
+        for warning in result["warnings"]:
+            print(f"[警告] {warning}")
+    return 0
+
+
+def cmd_portfolio_sell(args: argparse.Namespace) -> int:
+    with _portfolio_ctx() as (_conn, book):
+        account = _resolve_account(book, args)
+        result = book.sell(account["id"], quantity=args.quantity, price=args.price,
+                           fee=args.fee, **_trade_args(args))
+        print(f"卖出成功：{args.symbol} 剩余 {result['quantity']:,.2f} "
+              f"已实现盈亏 {result['realized_pnl']:,.2f}")
+        print(f"现金余额：{result['cash']:,.2f}")
+    return 0
+
+
+def cmd_portfolio_adjust(args: argparse.Namespace) -> int:
+    with _portfolio_ctx() as (_conn, book):
+        account = _resolve_account(book, args)
+        result = book.adjust(account["id"], quantity=args.quantity,
+                             cost_price=args.cost, risk=args.risk, **_trade_args(args))
+        print(f"已调整：{args.symbol} 目标数量 {result['quantity']:,.2f} "
+              f"成本 {result['cost_price']:,.4f}（变动 {result['delta']:+,.2f}）")
+    return 0
+
+
+def cmd_portfolio_cash(args: argparse.Namespace) -> int:
+    with _portfolio_ctx() as (_conn, book):
+        account = _resolve_account(book, args)
+        if args.deposit is not None:
+            balance = book.deposit(account["id"], args.deposit, trade_date=args.date,
+                                   note=args.note or "")
+            print(f"已存入 {args.deposit:,.2f}，当前现金 {balance:,.2f}")
+        if args.withdraw is not None:
+            balance = book.withdraw(account["id"], args.withdraw, trade_date=args.date,
+                                    note=args.note or "")
+            print(f"已取出 {args.withdraw:,.2f}，当前现金 {balance:,.2f}")
+        if args.deposit is None and args.withdraw is None:
+            print(f"当前现金：{book.cash_balance(account['id']):,.2f}")
+    return 0
+
+
+def cmd_portfolio_position(args: argparse.Namespace) -> int:
+    from quant.portfolio import prices, store
+
+    with _portfolio_ctx() as (conn, book):
+        if args.refresh:
+            result = prices.refresh_prices(conn, include_funds=not args.no_funds)
+            print(f"价格刷新：更新 {result['updated']} 个，跳过 {result['skipped']} 个")
+            if result["failed"]:
+                print("取价失败：" + "、".join(result["failed"]))
+
+        owner_id = None
+        if args.owner:
+            owner = store.find_owner(conn, args.owner)
+            if owner is None:
+                raise SystemExit(f"找不到资产账户: {args.owner}")
+            owner_id = owner["id"]
+        account_id = args.account_id
+        if args.account:
+            account_id = _resolve_account(book, args)["id"]
+
+        frame = book.positions(owner_id=owner_id, account_id=account_id,
+                               prices=prices.price_map(conn))
+        _print_table(frame, columns=["account", "symbol", "name", "kind", "risk", "quantity",
+                                     "cost_price", "price", "market_value", "pnl", "pnl_pct"])
+
+        summary = book.summary(owner_id=owner_id, account_id=account_id, frame=frame)
+        print(f"\n总资产 {summary['total_value']:,.2f}  成本 {summary['total_cost']:,.2f}  "
+              f"浮动盈亏 {summary['pnl']:,.2f}（{summary['pnl_pct']:+.2f}%）")
+        if summary["missing_price"]:
+            print(f"[提示] {summary['missing_price']} 个产品缺价格，未计入总资产")
+        for warning in summary["negative_cash"]:
+            print(f"[警告] {warning}")
+    return 0
+
+
+def cmd_portfolio_stats(args: argparse.Namespace) -> int:
+    from quant.portfolio import prices, store
+
+    with _portfolio_ctx() as (conn, book):
+        owner_id = None
+        if args.owner:
+            owner = store.find_owner(conn, args.owner)
+            if owner is None:
+                raise SystemExit(f"找不到资产账户: {args.owner}")
+            owner_id = owner["id"]
+        account_id = args.account_id
+        if args.account:
+            account_id = _resolve_account(book, args)["id"]
+
+        frame = book.positions(owner_id=owner_id, account_id=account_id,
+                               prices=prices.price_map(conn))
+        summary = book.summary(frame=frame)
+        print(f"总资产 {summary['total_value']:,.2f}（人民币口径，{summary['as_of']}）")
+        print(f"持仓成本 {summary['total_cost']:,.2f}   浮动盈亏 {summary['pnl']:,.2f} "
+              f"（{summary['pnl_pct']:+.2f}%）")
+        if summary["cash_by_currency"]:
+            cash = "，".join(f"{k} {v:,.2f}" for k, v in summary["cash_by_currency"].items())
+            print(f"现金余额：{cash}")
+        if summary["by_currency"]:
+            parts = "，".join(f"{k} {v['value']:,.2f}" for k, v in summary["by_currency"].items())
+            print(f"分币种市值：{parts}")
+        if summary["missing_price"]:
+            print(f"[提示] {summary['missing_price']} 个产品缺价格，未计入总资产")
+        for warning in summary["negative_cash"]:
+            print(f"[警告] {warning}")
+
+        print("\n风险占比：")
+        _print_table(book.risk_breakdown(frame=frame),
+                     columns=["risk_name", "value", "weight", "count", "missing"])
+    return 0
+
+
+def cmd_portfolio_txn(args: argparse.Namespace) -> int:
+    import pandas as pd
+
+    from quant.portfolio import store
+
+    with _portfolio_ctx() as (conn, _book):
+        txns = store.list_txns(conn, account_id=args.account_id, limit=args.limit)
+        _print_table(pd.DataFrame(txns),
+                     columns=["trade_date", "account_name", "symbol", "name", "action",
+                              "quantity", "price", "fee", "realized_pnl", "note"])
+    return 0
+
+
+def cmd_portfolio_update(args: argparse.Namespace) -> int:
+    from quant.portfolio import prices
+
+    with _portfolio_ctx() as (conn, _book):
+        print("刷新汇率…")
+        for currency, count in prices.update_fx(conn, days=args.fx_days).items():
+            print(f"  {currency}: 写入 {count} 天")
+        print("刷新价格…")
+        result = prices.refresh_prices(conn, include_funds=not args.no_funds)
+        print(f"  更新 {result['updated']} 个，跳过 {result['skipped']} 个")
+        if result["failed"]:
+            print("  取价失败：" + "、".join(result["failed"]))
+    return 0
+
+
+def cmd_portfolio_dividend(args: argparse.Namespace) -> int:
+    from quant.portfolio import dividends, store
+
+    with _portfolio_ctx() as (conn, book):
+        if args.refresh:
+            result = dividends.refresh_dividends(conn, include_funds=not args.no_funds)
+            print(f"分红拉取：写入/更新 {result['saved']} 条")
+            if result["failed"]:
+                print("未取到：" + "、".join(result["failed"]))
+
+        if args.add:
+            instrument = store.find_instrument(conn, args.kind, args.market, args.add)
+            if instrument is None:
+                raise SystemExit(f"还没有这个产品的持仓，先买入或调整: {args.add}")
+            dividends.add_manual_dividend(
+                conn, instrument["id"], ex_date=args.ex_date,
+                cash_per_share=args.per_share, pay_date=args.pay_date,
+                currency=instrument["currency"], note=args.note or "",
+            )
+            print(f"已手动登记分红：{args.add} {args.ex_date} 每股 {args.per_share}")
+
+        if args.record:
+            account = _resolve_account(book, args)
+            balance = dividends.record_as_cash(conn, args.record, account["id"],
+                                               trade_date=args.date)
+            print(f"已记入现金，当前余额 {balance:,.2f}")
+
+        account_id = None
+        if args.account or args.account_id:
+            account_id = _resolve_account(book, args)["id"]
+
+        frame = dividends.dividend_report(conn, account_id=account_id, year=args.year)
+        _print_table(frame, columns=["id", "account", "symbol", "name", "ex_date", "pay_date",
+                                     "cash_per_share", "quantity", "amount", "currency",
+                                     "recorded"])
+
+        summary = dividends.dividend_summary(conn, account_id=account_id, year=args.year)
+        scope = f"{args.year} 年" if args.year else "全部"
+        print(f"\n{scope}分红合计 {summary['total']:,.2f}（共 {summary['count']} 笔）")
+        for name, value in summary["by_account"].items():
+            print(f"  {name}: {value:,.2f}")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # 参数解析
 # --------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
@@ -620,11 +958,137 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--legacy-columns", action="store_true", help="输出旧版中文列名")
     p.set_defaults(func=cmd_calc_growth, complete_only=True)
 
+    # ---- 资产管理 ----
+    sub.add_parser("portfolio-init", help="建资产库（data/portfolio.db）").set_defaults(
+        func=cmd_portfolio_init)
+
+    p = sub.add_parser("portfolio-owner", help="资产账户（人）：新建 / 改名 / 删除 / 列表")
+    p.add_argument("--add", metavar="NAME", help="新建资产账户")
+    p.add_argument("--rename", metavar="OLD:NEW", help="改名")
+    p.add_argument("--delete", metavar="NAME", help="删除（其下资金账户与流水一并删除）")
+    p.add_argument("--note", default="", help="备注")
+    p.set_defaults(func=cmd_portfolio_owner)
+
+    p = sub.add_parser("portfolio-account", help="资金账户：新建 / 改名 / 删除 / 列表")
+    p.add_argument("--owner", default="", help="所属资产账户（--add 时必填）")
+    p.add_argument("--add", metavar="NAME", help="新建资金账户")
+    p.add_argument("--rename", metavar="OLD:NEW", help="改名")
+    p.add_argument("--delete", type=int, metavar="ID", help="按 id 删除")
+    p.add_argument("--type", default="securities",
+                   choices=["securities", "fund", "bank", "other"], help="账户类型")
+    p.add_argument("--currency", default="CNY", choices=["CNY", "HKD", "USD"],
+                   help="结算币种")
+    p.add_argument("--note", default="", help="备注")
+    p.set_defaults(func=cmd_portfolio_account)
+
+    def add_trade_args(parser, *, need_price=True):
+        parser.add_argument("--account", default=None, help="资金账户名称")
+        parser.add_argument("--account-id", type=int, default=None, help="资金账户 id")
+        parser.add_argument("--kind", default="stock",
+                            choices=["stock", "etf", "fund"], help="产品类型")
+        parser.add_argument("--market", default="CN", choices=["CN", "HK", "US"],
+                            help="市场")
+        parser.add_argument("--symbol", required=True, help="代码")
+        parser.add_argument("--name", default="", help="名称")
+        if need_price:
+            parser.add_argument("--price", type=float, required=True, help="成交价")
+        parser.add_argument("--date", default=None, help="日期 YYYY-MM-DD（默认今天）")
+        parser.add_argument("--note", default="", help="备注")
+        parser.add_argument("--risk", default=None, choices=["high", "mid", "low"],
+                            help="风险等级（新建产品时用）")
+
+    p = sub.add_parser("portfolio-buy", help="买入")
+    add_trade_args(p)
+    p.add_argument("--quantity", type=float, required=True, help="数量")
+    p.add_argument("--fee", type=float, default=0.0, help="手续费")
+    p.set_defaults(func=cmd_portfolio_buy)
+
+    p = sub.add_parser("portfolio-sell", help="卖出")
+    add_trade_args(p)
+    p.add_argument("--quantity", type=float, required=True, help="数量")
+    p.add_argument("--fee", type=float, default=0.0, help="手续费")
+    p.set_defaults(func=cmd_portfolio_sell)
+
+    p = sub.add_parser("portfolio-adjust", help="数量调整 / 期初导入")
+    add_trade_args(p, need_price=False)
+    p.add_argument("--quantity", type=float, required=True, help="目标持有数量")
+    p.add_argument("--cost", type=float, default=0.0, help="成本价")
+    p.set_defaults(func=cmd_portfolio_adjust)
+
+    p = sub.add_parser("portfolio-cash", help="现金存入 / 取出 / 查询")
+    p.add_argument("--account", default=None, help="资金账户名称")
+    p.add_argument("--account-id", type=int, default=None, help="资金账户 id")
+    p.add_argument("--deposit", type=float, default=None, help="存入金额")
+    p.add_argument("--withdraw", type=float, default=None, help="取出金额")
+    p.add_argument("--date", default=None, help="日期 YYYY-MM-DD")
+    p.add_argument("--note", default="", help="备注")
+    p.set_defaults(func=cmd_portfolio_cash)
+
+    p = sub.add_parser("portfolio-position", help="持仓表与总资产")
+    p.add_argument("--owner", default=None, help="只看某个资产账户")
+    p.add_argument("--account", default=None, help="只看某个资金账户")
+    p.add_argument("--account-id", type=int, default=None)
+    p.add_argument("--refresh", action="store_true", help="先刷新价格")
+    p.add_argument("--no-funds", dest="no_funds", action="store_true",
+                   help="刷新时跳过场外基金净值")
+    p.set_defaults(func=cmd_portfolio_position)
+
+    p = sub.add_parser("portfolio-stats", help="总资产与高中低风险占比")
+    p.add_argument("--owner", default=None)
+    p.add_argument("--account", default=None)
+    p.add_argument("--account-id", type=int, default=None)
+    p.set_defaults(func=cmd_portfolio_stats)
+
+    p = sub.add_parser("portfolio-txn", help="交易流水")
+    p.add_argument("--account-id", type=int, default=None)
+    p.add_argument("--limit", type=int, default=50)
+    p.set_defaults(func=cmd_portfolio_txn)
+
+    p = sub.add_parser("portfolio-update", help="刷新汇率与持仓价格")
+    p.add_argument("--no-funds", dest="no_funds", action="store_true",
+                   help="跳过场外基金净值")
+    p.add_argument("--fx-days", type=int, default=30, help="汇率回看天数")
+    p.set_defaults(func=cmd_portfolio_update)
+
+    p = sub.add_parser("portfolio-dividend", help="分红：拉取 / 查看 / 手动登记 / 记入现金")
+    p.add_argument("--refresh", action="store_true", help="自动拉取分红")
+    p.add_argument("--no-funds", dest="no_funds", action="store_true", help="跳过基金分红")
+    p.add_argument("--year", type=int, default=None, help="只看某年（按除息日）")
+    p.add_argument("--account", default=None, help="只看某个资金账户")
+    p.add_argument("--account-id", type=int, default=None)
+    p.add_argument("--add", metavar="SYMBOL", help="手动登记分红：产品代码")
+    p.add_argument("--kind", default="stock", choices=["stock", "etf", "fund"])
+    p.add_argument("--market", default="CN", choices=["CN", "HK", "US"])
+    p.add_argument("--ex-date", dest="ex_date", default=None, help="除息日")
+    p.add_argument("--pay-date", dest="pay_date", default=None, help="派息日")
+    p.add_argument("--per-share", dest="per_share", type=float, default=0.0,
+                   help="每股分红")
+    p.add_argument("--record", type=int, metavar="DIVIDEND_ID", default=None,
+                   help="把这笔分红记入现金")
+    p.add_argument("--date", default=None, help="入账日期")
+    p.add_argument("--note", default="")
+    p.set_defaults(func=cmd_portfolio_dividend)
+
     return parser
+
+
+def _relax_console_encoding() -> None:
+    """让控制台输出不至于因为个别字符而崩掉。
+
+    pandas 在 to_string 对齐时会插入私有区填充字符（\ue000 段），
+    Windows 默认的 GBK 代码页编不了它们，会直接抛 UnicodeEncodeError。
+    这里改成「编不了就替换」，保证表格总能打印出来。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):  # pragma: no cover - 非文本流
+            pass
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI 主函数，返回进程退出码。"""
+    _relax_console_encoding()
     config.setup_logging(logging.INFO)
     parser = build_parser()
     args = parser.parse_args(argv)

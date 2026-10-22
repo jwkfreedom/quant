@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -532,3 +533,217 @@ def available_updates() -> list[dict]:
          "command": "quant rebuild-valuation --workers 4",
          "slow": True, "desc": "重算 PE/PB/PS 历史分位"},
     ]
+
+# --------------------------------------------------------------------------
+# 资产管理（portfolio）
+# --------------------------------------------------------------------------
+@contextmanager
+def _portfolio_db():
+    """打开资产库并保证表结构存在。"""
+    from quant.portfolio import Portfolio, open_db as portfolio_open_db
+    from quant.portfolio import store as portfolio_store
+
+    with portfolio_open_db() as conn:
+        portfolio_store.ensure_schema(conn)
+        yield conn, Portfolio(conn)
+
+
+def portfolio_display(frame: pd.DataFrame) -> pd.DataFrame:
+    """把资产相关英文字段名换成中文（只在展示层做）。"""
+    from quant.portfolio import schema as pschema
+
+    if frame is None or frame.empty:
+        return frame
+    used: set[str] = set()
+    mapping: dict[str, str] = {}
+    for column in frame.columns:
+        label = pschema.DISPLAY_NAMES.get(column, column)
+        if label in used:          # 多个英文字段映射到同一个中文名时，退回英文避免重列
+            label = column
+        used.add(label)
+        mapping[column] = label
+    return frame.rename(columns=mapping)
+
+
+def portfolio_owners() -> list[dict]:
+    """资产账户 + 其下的资金账户（两级）。"""
+    from quant.portfolio import store as portfolio_store
+
+    with _portfolio_db() as (conn, book):
+        owners = []
+        for owner in portfolio_store.list_owners(conn):
+            accounts = [
+                {**account, "cash": book.cash_balance(account["id"])}
+                for account in portfolio_store.list_accounts(conn, owner["id"])
+            ]
+            owners.append({**owner, "accounts": accounts})
+        return owners
+
+
+def portfolio_accounts() -> list[dict]:
+    """扁平的资金账户列表（带资产账户名），供下拉框使用。"""
+    result = []
+    for owner in portfolio_owners():
+        for account in owner["accounts"]:
+            result.append({
+                "id": account["id"],
+                "label": f"{owner['name']} / {account['name']}",
+                "owner": owner["name"],
+                "name": account["name"],
+                "currency": account["currency"],
+                "account_type": account["account_type"],
+                "cash": account["cash"],
+            })
+    return result
+
+
+def portfolio_positions(owner_id: int | None = None,
+                        account_id: int | None = None) -> pd.DataFrame:
+    """持仓估值表（价格取资产库里保存的最近价）。"""
+    from quant.portfolio import prices as portfolio_prices
+
+    with _portfolio_db() as (conn, book):
+        return book.positions(owner_id=owner_id, account_id=account_id,
+                              prices=portfolio_prices.price_map(conn))
+
+
+def portfolio_summary(owner_id: int | None = None,
+                      account_id: int | None = None) -> dict:
+    with _portfolio_db() as (conn, book):
+        return book.summary(owner_id=owner_id, account_id=account_id)
+
+
+def portfolio_risk(owner_id: int | None = None,
+                   account_id: int | None = None) -> pd.DataFrame:
+    with _portfolio_db() as (conn, book):
+        return book.risk_breakdown(owner_id=owner_id, account_id=account_id)
+
+
+def portfolio_cash(account_id: int) -> float:
+    with _portfolio_db() as (_conn, book):
+        return book.cash_balance(account_id)
+
+
+def portfolio_txns(account_id: int | None = None, limit: int = 1000) -> pd.DataFrame:
+    from quant.portfolio import store as portfolio_store
+
+    with _portfolio_db() as (conn, _book):
+        rows = portfolio_store.list_txns(conn, account_id=account_id, limit=limit)
+    return pd.DataFrame(rows)
+
+
+def portfolio_dividends(account_id: int | None = None,
+                        year: int | None = None) -> tuple[pd.DataFrame, dict]:
+    """分红明细 + 汇总。"""
+    from quant.portfolio import dividends as portfolio_dividends_module
+
+    with _portfolio_db() as (conn, _book):
+        frame = portfolio_dividends_module.dividend_report(
+            conn, account_id=account_id, year=year)
+        summary = portfolio_dividends_module.dividend_summary(
+            conn, account_id=account_id, year=year)
+    return frame, summary
+
+
+def portfolio_years() -> list[int]:
+    """分红里出现过的年份，倒序。"""
+    from quant.portfolio import store as portfolio_store
+
+    with _portfolio_db() as (conn, _book):
+        rows = portfolio_store.list_dividends(conn)
+    years = {int(str(row["ex_date"])[:4]) for row in rows
+             if row["ex_date"] and str(row["ex_date"])[:4].isdigit()}
+    return sorted(years, reverse=True)[:15]
+
+
+def portfolio_refresh(*, include_funds: bool = True, with_fx: bool = True) -> dict:
+    """刷新汇率 + 持仓价格。"""
+    from quant.portfolio import prices as portfolio_prices
+
+    with _portfolio_db() as (conn, _book):
+        result = portfolio_prices.refresh_prices(conn, include_funds=include_funds)
+        if with_fx:
+            result["fx"] = portfolio_prices.update_fx(conn)
+        return result
+
+
+def portfolio_refresh_dividends(*, include_funds: bool = True) -> dict:
+    from quant.portfolio import dividends as portfolio_dividends_module
+
+    with _portfolio_db() as (conn, _book):
+        return portfolio_dividends_module.refresh_dividends(conn, include_funds=include_funds)
+
+
+def portfolio_buy(account_id: int, *, kind: str, market: str, symbol: str,
+                  quantity: float, price: float, name: str = "", fee: float = 0.0,
+                  trade_date: str | None = None, note: str = "") -> dict:
+    with _portfolio_db() as (_conn, book):
+        return book.buy(account_id, kind=kind, market=market, symbol=symbol,
+                        quantity=quantity, price=price, name=name, fee=fee,
+                        trade_date=trade_date, note=note)
+
+
+def portfolio_sell(account_id: int, *, kind: str, market: str, symbol: str,
+                   quantity: float, price: float, name: str = "", fee: float = 0.0,
+                   trade_date: str | None = None, note: str = "") -> dict:
+    with _portfolio_db() as (_conn, book):
+        return book.sell(account_id, kind=kind, market=market, symbol=symbol,
+                         quantity=quantity, price=price, name=name, fee=fee,
+                         trade_date=trade_date, note=note)
+
+
+def portfolio_adjust(account_id: int, *, kind: str, market: str, symbol: str,
+                     quantity: float, cost_price: float = 0.0, name: str = "",
+                     trade_date: str | None = None, note: str = "") -> dict:
+    with _portfolio_db() as (_conn, book):
+        return book.adjust(account_id, kind=kind, market=market, symbol=symbol,
+                           quantity=quantity, cost_price=cost_price, name=name,
+                           trade_date=trade_date, note=note)
+
+
+def portfolio_cash_move(account_id: int, amount: float, *, deposit: bool,
+                        trade_date: str | None = None, note: str = "") -> float:
+    with _portfolio_db() as (_conn, book):
+        if deposit:
+            return book.deposit(account_id, amount, trade_date=trade_date, note=note)
+        return book.withdraw(account_id, amount, trade_date=trade_date, note=note)
+
+
+def portfolio_record_dividend(dividend_id: int, account_id: int,
+                              trade_date: str | None = None) -> float:
+    from quant.portfolio import dividends as portfolio_dividends_module
+
+    with _portfolio_db() as (conn, _book):
+        return portfolio_dividends_module.record_as_cash(conn, dividend_id, account_id,
+                                                         trade_date=trade_date)
+
+
+def portfolio_add_account(owner_id: int, name: str, *,
+                          account_type: str = "securities",
+                          currency: str = "CNY") -> int:
+    with _portfolio_db() as (_conn, book):
+        return book.add_account(owner_id, name, account_type=account_type,
+                                currency=currency)
+
+
+def portfolio_add_owner(name: str) -> int:
+    with _portfolio_db() as (_conn, book):
+        return book.create_owner(name)
+
+
+def portfolio_delete_account(account_id: int) -> None:
+    from quant.portfolio import store as portfolio_store
+
+    with _portfolio_db() as (conn, _book):
+        portfolio_store.delete_account(conn, account_id)
+
+
+def portfolio_set_risk(kind: str, market: str, symbol: str, risk: str) -> None:
+    """改某个产品的风险等级。"""
+    from quant.portfolio import store as portfolio_store
+
+    with _portfolio_db() as (conn, _book):
+        instrument = portfolio_store.find_instrument(conn, kind, market, symbol)
+        if instrument is None:
+            raise ValueError(f"产品不存在: {symbol}")
+        portfolio_store.update_instrument(conn, instrument["id"], risk=risk)

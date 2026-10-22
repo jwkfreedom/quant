@@ -25,6 +25,7 @@ from quant.ui.components import SideNav, make_font, text_label  # noqa: E402
 from quant.ui.screens.backtest import BacktestPanel  # noqa: E402
 from quant.ui.screens.dashboard import DashboardPanel  # noqa: E402
 from quant.ui.screens.explorer import ExplorerPanel  # noqa: E402
+from quant.ui.screens.portfolio import PortfolioPanel  # noqa: E402
 from quant.ui.screens.screener import ScreenerPanel  # noqa: E402
 from quant.ui.screens.settings import SettingsPanel  # noqa: E402
 from quant.ui.screens.stock_detail import StockDetailPanel  # noqa: E402
@@ -36,6 +37,7 @@ PAGES = [
     ("个股分析", StockDetailPanel),
     ("策略回测", BacktestPanel),
     ("数据浏览器", ExplorerPanel),
+    ("资产管理", PortfolioPanel),
     ("设置/关于", SettingsPanel),
 ]
 

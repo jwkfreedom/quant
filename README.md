@@ -87,6 +87,7 @@ copy .env.example .env
 ### 桌面界面
 
 ```bat
+run_ui.bat                  :: 在项目根目录直接运行（等价于 scripts\run_ui.bat）
 scripts\run_ui.bat          :: 双击启动
 .venv\Scripts\python.exe -m quant ui          :: 或命令行启动
 .venv\Scripts\python.exe -m quant ui 000001   :: 启动后直接打开某只股票

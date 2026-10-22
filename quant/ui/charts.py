@@ -471,3 +471,65 @@ def pe_distribution_figure(snapshot: pd.DataFrame, *, title: str = "") -> plt.Fi
     ax.grid(alpha=0.25, axis="y")
     fig.tight_layout()
     return fig
+
+# --------------------------------------------------------------------------
+# 资产管理
+# --------------------------------------------------------------------------
+def risk_pie_figure(table, *, title: str = "风险占比") -> plt.Figure:
+    """风险占比环形图。table 来自 Portfolio.risk_breakdown()。"""
+    from quant.portfolio import schema as pschema
+
+    if table is None or len(table) == 0 or float(table["value"].sum()) <= 0:
+        return _empty_figure("还没有可统计的持仓")
+
+    values = [max(float(v), 0.0) for v in table["value"]]
+    labels = list(table["risk_name"])
+    colours = [pschema.RISK_COLOURS.get(r, "#999999") for r in table["risk"]]
+
+    fig, ax = plt.subplots(figsize=(4.6, 3.6))
+    wedges, _texts, autotexts = ax.pie(
+        values, labels=None, colors=colours, autopct=lambda p: f"{p:.1f}%" if p > 0.5 else "",
+        startangle=90, counterclock=False,
+        wedgeprops={"width": 0.42, "edgecolor": "white", "linewidth": 1.5},
+        textprops={"fontsize": 9},
+    )
+    for text in autotexts:
+        text.set_color("white")
+        text.set_fontweight("bold")
+
+    total = sum(values)
+    ax.text(0, 0.08, f"{total / 10000:,.1f}", ha="center", va="center",
+            fontsize=15, fontweight="bold", color=theme.C.text)
+    ax.text(0, -0.16, "万元", ha="center", va="center", fontsize=8,
+            color=theme.C.text_secondary)
+    ax.legend(wedges, labels, loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=9)
+    ax.set_title(title, fontsize=theme.FONT_CARD_TITLE, color=theme.C.text)
+    ax.axis("equal")
+    fig.tight_layout()
+    return fig
+
+
+def account_bar_figure(frame, *, title: str = "各资金账户市值") -> plt.Figure:
+    """按资金账户汇总市值（人民币口径）。frame 来自 Portfolio.positions()。"""
+    if frame is None or len(frame) == 0:
+        return _empty_figure("还没有持仓")
+
+    work = frame.copy()
+    work["value"] = pd.to_numeric(work["market_value"], errors="coerce").fillna(0.0)
+    grouped = work.groupby("account")["value"].sum().sort_values()
+    grouped = grouped[grouped.abs() > 0]
+    if grouped.empty:
+        return _empty_figure("还没有可统计的持仓")
+
+    fig, ax = plt.subplots(figsize=(5.2, 0.9 + 0.42 * len(grouped)))
+    colours = [theme.C.primary if v >= 0 else theme.C.down for v in grouped.values]
+    ax.barh(list(grouped.index), [v / 10000 for v in grouped.values], color=colours,
+            height=0.55)
+    ax.set_xlabel("市值（万元）", fontsize=8)
+    ax.set_title(title, fontsize=theme.FONT_CARD_TITLE)
+    ax.grid(axis="y", visible=False)
+    for index, value in enumerate(grouped.values):
+        ax.text(value / 10000, index, f" {value / 10000:,.1f}", va="center",
+                fontsize=8, color=theme.C.text_secondary)
+    fig.tight_layout()
+    return fig
