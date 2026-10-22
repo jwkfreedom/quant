@@ -36,6 +36,29 @@ def _to_numeric(df: pd.DataFrame, columns) -> pd.DataFrame:
     return df
 
 
+#: 前复权列 -> 对应的不复权列
+QFQ_PAIRS: tuple[tuple[str, str], ...] = (
+    ("open_qfq", "open"), ("high_qfq", "high"),
+    ("low_qfq", "low"), ("close_qfq", "close"),
+)
+
+
+def fill_qfq_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """用不复权价回填缺失的前复权列。
+
+    新浪这类数据源只给不复权价，前复权列会是空值；
+    空值会让回测和图表算出 NaN（策略整个废掉）。绝大多数交易日
+    前复权价与不复权价相同（没除权的区间），所以这里直接回填，
+    比留空安全得多。东财源带了 _qfq 列的行不受影响。
+    """
+    if df is None or df.empty:
+        return df
+    for qfq, raw in QFQ_PAIRS:
+        if qfq in df.columns and raw in df.columns:
+            df[qfq] = df[qfq].fillna(df[raw])
+    return df
+
+
 def prepare_price_frame(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     """原始价格表（中文列名，含 _qfq 后缀）-> daily_price 表结构。
 
@@ -55,6 +78,7 @@ def prepare_price_frame(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         if column not in df.columns:
             df[column] = None
     df = _to_numeric(df, schema.PRICE_VALUE_COLUMNS)
+    fill_qfq_columns(df)
     return df.loc[:, ["symbol", "date", "idate", *schema.PRICE_VALUE_COLUMNS]]
 
 

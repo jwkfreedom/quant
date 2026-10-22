@@ -599,24 +599,36 @@ def portfolio_accounts() -> list[dict]:
 
 def portfolio_positions(owner_id: int | None = None,
                         account_id: int | None = None) -> pd.DataFrame:
-    """持仓估值表（价格取资产库里保存的最近价）。"""
+    """持仓估值表。
+
+    价格用「本地行情库的最新收盘价」，取不到才退回上次刷新保存的价，
+    因此不点刷新也能看到股票的最新市值。
+    """
     from quant.portfolio import prices as portfolio_prices
 
     with _portfolio_db() as (conn, book):
         return book.positions(owner_id=owner_id, account_id=account_id,
-                              prices=portfolio_prices.price_map(conn))
+                              prices=portfolio_prices.resolve_price_map(conn))
 
 
 def portfolio_summary(owner_id: int | None = None,
                       account_id: int | None = None) -> dict:
+    from quant.portfolio import prices as portfolio_prices
+
     with _portfolio_db() as (conn, book):
-        return book.summary(owner_id=owner_id, account_id=account_id)
+        frame = book.positions(owner_id=owner_id, account_id=account_id,
+                               prices=portfolio_prices.resolve_price_map(conn))
+        return book.summary(frame=frame)
 
 
 def portfolio_risk(owner_id: int | None = None,
                    account_id: int | None = None) -> pd.DataFrame:
+    from quant.portfolio import prices as portfolio_prices
+
     with _portfolio_db() as (conn, book):
-        return book.risk_breakdown(owner_id=owner_id, account_id=account_id)
+        frame = book.positions(owner_id=owner_id, account_id=account_id,
+                               prices=portfolio_prices.resolve_price_map(conn))
+        return book.risk_breakdown(frame=frame)
 
 
 def portfolio_cash(account_id: int) -> float:
@@ -656,14 +668,23 @@ def portfolio_years() -> list[int]:
     return sorted(years, reverse=True)[:15]
 
 
-def portfolio_refresh(*, include_funds: bool = True, with_fx: bool = True) -> dict:
-    """刷新汇率 + 持仓价格。"""
+def portfolio_refresh(*, include_funds: bool = True, with_fx: bool = True,
+                      progress=None) -> dict:
+    """刷新持仓价格（可选汇率）。
+
+    progress: 可选回调 progress(已完成, 总数, 说明)，界面用来显示进度。
+    """
     from quant.portfolio import prices as portfolio_prices
 
     with _portfolio_db() as (conn, _book):
-        result = portfolio_prices.refresh_prices(conn, include_funds=include_funds)
-        if with_fx:
-            result["fx"] = portfolio_prices.update_fx(conn)
+        if callable(progress):
+            progress(0, 1, "刷新汇率…")
+        fx = portfolio_prices.update_fx(conn) if with_fx else {}
+        if callable(progress):
+            progress(0, 1, "准备刷新价格…")
+        result = portfolio_prices.refresh_prices(conn, include_funds=include_funds,
+                                                 progress=progress)
+        result["fx"] = fx
         return result
 
 

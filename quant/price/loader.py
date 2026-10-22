@@ -38,7 +38,16 @@ def _price_frame_from_db(df_db: pd.DataFrame) -> pd.DataFrame:
     # 数据库里 open/close... 是不复权，*_qfq 是前复权
     for column in _OHLC:
         df[f"{column}_org"] = df[column]
-        df[column] = df[f"{column}_qfq"]
+        qfq = df.get(f"{column}_qfq")
+        if qfq is None:          # 老库可能没有 *_qfq 列
+            continue
+        # 前复权列缺口（新浪源增量更新时常见）退回不复权价：
+        # 留 NaN 会让回测最后一根 bar 变成 NaN，整条净值曲线跟着废掉
+        df[column] = qfq.where(qfq.notna(), df[column])
+
+    # 连不复权价都没有的行没法参与计算，直接丢掉
+    if "close" in df.columns:
+        df = df[df["close"].notna()]
 
     return df.loc[:, [c for c in schema.PRICE_FRAME_COLUMNS if c in df.columns]]
 

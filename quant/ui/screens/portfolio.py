@@ -660,13 +660,23 @@ class PortfolioPanel(wx.Panel):
     # 操作
     # ------------------------------------------------------------------
     def on_refresh(self):
-        self.runner.run(lambda: vm.portfolio_refresh(),
-                        lambda result: self._after_refresh(result),
+        """刷新价格与汇率，过程中把进度写到副标题上。"""
+
+        frame = wx.GetTopLevelParent(self)
+
+        def report(done: int, total: int, label: str):
+            text = f"刷新中 {done}/{total}：{label}" if total else label
+            wx.CallAfter(self.header.set_subtitle, text)
+            if hasattr(frame, "set_status"):
+                wx.CallAfter(frame.set_status, text)
+
+        self.runner.run(lambda: vm.portfolio_refresh(progress=report),
+                        self._after_refresh,
                         on_error=lambda exc: error_dialog(self, exc),
                         busy_message="刷新价格与汇率…（联网，可能需要几十秒）")
 
     def _after_refresh(self, result: dict):
-        message = [f"价格更新 {result['updated']} 个"]
+        message = [f"价格更新 {result['updated']}/{result.get('total', result['updated'])} 个"]
         if result.get("skipped"):
             message.append(f"跳过 {result['skipped']} 个现金")
         fx = result.get("fx") or {}
@@ -674,7 +684,7 @@ class PortfolioPanel(wx.Panel):
             message.append("汇率 " + "、".join(f"{k} {v} 天" for k, v in fx.items()))
         if result["failed"]:
             message.append("失败：" + "、".join(result["failed"]))
-        self.header.set_subtitle("　".join(message))
+        self._flash = "　".join(message)
         self.refresh()
 
     def on_refresh_dividends(self):

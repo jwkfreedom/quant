@@ -107,6 +107,19 @@ class DashboardPanel(wx.Panel):
         if wx.MessageBox(message, "确认", wx.YES_NO | wx.ICON_QUESTION, self) != wx.YES:
             return
 
+        frame = wx.GetTopLevelParent(self)
+
+        def report(done, total, label=""):
+            """后台线程里的进度回调：必须回到主线程改界面。"""
+            if total:
+                text = f"{action['label']} {done}/{total}"
+                if label and 0 < done < total:
+                    text += f"（{label}）"
+            else:
+                text = f"{action['label']}中…"
+            if hasattr(frame, "set_status"):
+                wx.CallAfter(frame.set_status, text)
+
         def work():
             import datetime
 
@@ -115,11 +128,12 @@ class DashboardPanel(wx.Panel):
             store.init_db()
             year = datetime.date.today().year
             if key == "price":
-                return update.update_price(workers=4, delay=0.1)
+                return update.update_price(workers=4, delay=0.1, progress=report)
             if key == "jibenmian":
                 return update.update_jibenmian(from_year=year - 1, to_year=year)
             if key == "financial":
-                return update.update_financial(stale_days=180, workers=4, delay=0.2)
+                return update.update_financial(stale_days=180, workers=4, delay=0.2,
+                                               progress=report)
             if key == "valuation":
                 from quant.foundation.valuation import rebuild_fundamental_ttm, rebuild_valuation
 

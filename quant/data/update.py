@@ -25,6 +25,9 @@ from quant.foundation.season import get_seasondate
 
 logger = logging.getLogger(__name__)
 
+#: 长任务进度回调节奏（每处理多少只回报一次，太频繁会让界面卡顿）
+PROGRESS_STEP = 25
+
 
 # --------------------------------------------------------------------------
 # 工具
@@ -138,6 +141,7 @@ def update_price(
     timeout: float = 40.0,
     source: str = "auto",
     conn: sqlite3.Connection | None = None,
+    progress=None,
 ) -> dict:
     """增量（或全量）更新日线。
 
@@ -177,6 +181,10 @@ def update_price(
         rows = 0
         failures: list[str] = []
 
+        total = len(plan)
+        if callable(progress):
+            progress(0, total, "准备中…")
+
         def load_one(item: tuple[str, str]) -> tuple[str, pd.DataFrame]:
             code, start_date = item
             download_a.sleep(delay)
@@ -203,6 +211,8 @@ def update_price(
                     except Exception:
                         failures.append(code)
                         logger.exception("更新日线失败: %s", code)
+                    if callable(progress) and (index % PROGRESS_STEP == 0 or index == total):
+                        progress(index, total, code)
                     if index % 100 == 0:
                         conn.commit()
                         logger.info("日线更新进度 %d/%d，更新 %d 只，新增 %d 行，用时 %.0fs",
@@ -215,6 +225,8 @@ def update_price(
                 except Exception:
                     failures.append(item[0])
                     logger.exception("更新日线失败: %s", item[0])
+                if callable(progress) and (index % PROGRESS_STEP == 0 or index == total):
+                    progress(index, total, item[0])
                 if index % 100 == 0:
                     conn.commit()
                     logger.info("日线更新进度 %d/%d，更新 %d 只，新增 %d 行，用时 %.0fs",
@@ -298,6 +310,7 @@ def update_financial(
     timeout: float = 40.0,
     stale_days: int | None = None,
     conn: sqlite3.Connection | None = None,
+    progress=None,
 ) -> dict:
     """逐股更新财务指标（financial_indicator 表）。
 
@@ -332,6 +345,10 @@ def update_financial(
         rows = 0
         failures: list[str] = []
 
+        total = len(symbol_list)
+        if callable(progress):
+            progress(0, total, "准备中…")
+
         def load_one(code: str) -> pd.DataFrame:
             """抓取 + 规范化（在工作线程里跑，纯网络与 CPU，不碰数据库）。"""
             download_a.sleep(delay)
@@ -365,6 +382,8 @@ def update_financial(
                     except Exception:
                         failures.append(symbol)
                         logger.exception("更新财务指标失败: %s", symbol)
+                    if callable(progress) and (index % PROGRESS_STEP == 0 or index == total):
+                        progress(index, total, symbol)
                     if index % 100 == 0:
                         conn.commit()
                         logger.info("财务指标进度 %d/%d，更新 %d 只，累计 %d 行，用时 %.0fs",
@@ -376,6 +395,8 @@ def update_financial(
                 except Exception:
                     failures.append(symbol)
                     logger.exception("更新财务指标失败: %s", symbol)
+                if callable(progress) and (index % PROGRESS_STEP == 0 or index == total):
+                    progress(index, total, symbol)
                 if index % 100 == 0:
                     conn.commit()
                     logger.info("财务指标进度 %d/%d，更新 %d 只，累计 %d 行，用时 %.0fs",

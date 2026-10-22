@@ -223,28 +223,69 @@ def update_fx(conn, currencies: tuple[str, ...] = ("USD", "HKD"), days: int = 30
 
 
 # --------------------------------------------------------------------------
+# 渲染时取价（不联网）
+# --------------------------------------------------------------------------
+def resolve_price_map(conn, holdings=None) -> dict:
+    """给持仓估值用的价格表：(kind, market, symbol) -> (价格, 日期)。
+
+    优先级：
+      1. 本地行情库的**最新收盘价**（A股 / 场内 ETF，不联网，很快）
+      2. 产品上保存的上次刷新价（场外基金净值、本地没有数据的品种）
+    都取不到就**不放进表里**，界面会显示「缺价格」。
+    """
+    if holdings is None:
+        holdings = store.list_holdings(conn)
+
+    result: dict = {}
+    for row in holdings:
+        key = (row["kind"], row["market"], row["symbol"])
+        if key in result:
+            continue
+
+        if row["kind"] == schema.KIND_CASH:
+            result[key] = (1.0, None)
+            continue
+
+        latest = local_latest(row["kind"], row["market"], row["symbol"])
+        if latest is not None:
+            result[key] = latest
+        elif row["manual_price"] is not None:
+            result[key] = (float(row["manual_price"]), row["price_date"])
+    return result
+
+
+# --------------------------------------------------------------------------
 # 批量刷新持仓价格
 # --------------------------------------------------------------------------
-def refresh_prices(conn, *, include_funds: bool = True, owner_id: int | None = None) -> dict:
+def refresh_prices(conn, *, include_funds: bool = True, owner_id: int | None = None,
+                   progress=None) -> dict:
     """刷新所有持仓产品的价格，写回产品表。
 
-    返回 {"updated": n, "failed": [...], "skipped": n}
+    progress: 可选回调 progress(已完成, 总数, 说明文字)，用来显示进度。
+    返回 {"updated": n, "failed": [...], "skipped": n, "total": n}
     """
-    from quant.portfolio import service
-
     holdings = store.list_holdings(conn)
     accounts = {a["id"]: a for a in store.list_accounts(conn)}
     if owner_id is not None:
         holdings = [h for h in holdings
                     if accounts.get(h["account_id"], {}).get("owner_id") == owner_id]
 
-    updated, failed, skipped = 0, [], 0
+    # 同一只产品可能被多个账户持有，按产品去重，避免重复联网
+    unique: dict[int, dict] = {}
     for row in holdings:
-        kind = row["kind"]
-        if kind == schema.KIND_CASH:
-            skipped += 1
-            continue
+        unique.setdefault(row["instrument_id"], row)
 
+    targets = [row for row in unique.values() if row["kind"] != schema.KIND_CASH]
+    skipped = len(unique) - len(targets)
+    total = len(targets)
+
+    updated, failed = 0, []
+    for index, row in enumerate(targets, start=1):
+        if callable(progress):
+            label = row["name"] or row["symbol"]
+            progress(index, total, f"{row['symbol']} {label}".strip())
+
+        kind = row["kind"]
         result = None
         if kind == schema.KIND_STOCK and row["market"] == schema.MARKET_CN:
             # 本地全市场库优先，缺了再联网
@@ -268,7 +309,7 @@ def refresh_prices(conn, *, include_funds: bool = True, owner_id: int | None = N
                                 manual_price=float(price), price_date=price_date)
         updated += 1
 
-    return {"updated": updated, "failed": failed, "skipped": skipped}
+    return {"updated": updated, "failed": failed, "skipped": skipped, "total": total}
 
 
 def price_map(conn) -> dict:

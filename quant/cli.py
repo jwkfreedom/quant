@@ -268,6 +268,43 @@ def cmd_update_all(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_db_fill_qfq(_args: argparse.Namespace) -> int:
+    """把 daily_price 里缺失的前复权列用不复权价回填。
+
+    新浪数据源增量更新的行只有不复权价，前复权列为空；
+    留空会让回测和图表算出 NaN，所以统一回填。
+    """
+    from quant import config
+    from quant.data import store
+
+    pairs = (("open_qfq", "open"), ("high_qfq", "high"),
+             ("low_qfq", "low"), ("close_qfq", "close"))
+    try:
+        with store.open_db(config.DB_PATH) as conn:
+            total = 0
+            for qfq, raw in pairs:
+                cursor = conn.execute(
+                    f"UPDATE daily_price SET {qfq} = {raw} "
+                    f"WHERE {qfq} IS NULL AND {raw} IS NOT NULL"
+                )
+                print(f"  {qfq} <- {raw}: {cursor.rowcount:,} 行")
+                total += cursor.rowcount
+            conn.commit()
+            left = conn.execute(
+                "SELECT COUNT(*) FROM daily_price WHERE close_qfq IS NULL"
+            ).fetchone()[0]
+    except Exception as exc:
+        message = str(exc).lower()
+        if "locked" in message or "busy" in message:
+            print("数据库被占用（多半是「更新行情」还在跑）。")
+            print("等更新完成后再执行一次：quant db-fill-qfq")
+            return 1
+        raise
+
+    print(f"合计回填 {total:,} 行；剩余 close_qfq 为空 {left:,} 行（不复权价也缺，属正常）")
+    return 0
+
+
 def cmd_rebuild_growth(args: argparse.Namespace) -> int:
     from quant.data import update
 
@@ -892,6 +929,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("update-all", help="一键更新（基本面 -> 增长 -> 日线 -> ETF）")
     p.add_argument("--price-limit", type=int, default=None)
     p.set_defaults(func=cmd_update_all)
+
+    sub.add_parser(
+        "db-fill-qfq",
+        help="用不复权价回填缺失的前复权列（新浪源增量更新后跑一次）",
+    ).set_defaults(func=cmd_db_fill_qfq)
 
     p = sub.add_parser("rebuild-growth", help="从 fundamental 重算单季增长表")
     p.add_argument("--season-start", type=int, default=None, help="只重算该季度及以后（YYYYMMDD）")
