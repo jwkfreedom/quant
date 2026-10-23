@@ -850,6 +850,29 @@ def cmd_portfolio_dividend(args: argparse.Namespace) -> int:
         if args.account or args.account_id:
             account_id = _resolve_account(book, args)["id"]
 
+        if args.forecast:
+            detail, summary = dividends.dividend_forecast(
+                conn, account_id=account_id,
+                year=args.year if args.year else None,
+                months=args.months,
+            )
+            print()
+            print(f"分红预期（口径：{summary['scope']} 的每单位分红 × 当前持仓）")
+            _print_table(detail, columns=["account", "symbol", "name", "quantity",
+                                          "cash_per_share", "last_ex_date",
+                                          "forecast_amount", "forecast_base",
+                                          "yield_pct", "note"])
+            print()
+            print(f"合计预期年度分红 {summary['total_base']:,.2f} 元"
+                  f"（{summary['with_dividend']}/{summary['count']} 只产品有分红）")
+            if summary["market_value"]:
+                print(f"按当前市值折算的年化股息率 {summary['yield_pct']:.2f}%")
+            if summary["missing_price"]:
+                print(f"[提示] {summary['missing_price']} 个产品缺价格，股息率不完整")
+            if not args.refresh and summary["with_dividend"] == 0:
+                print("[提示] 还没有分红数据，先跑一次：quant portfolio-dividend --refresh")
+            return 0
+
         frame = dividends.dividend_report(conn, account_id=account_id, year=args.year)
         _print_table(frame, columns=["id", "account", "symbol", "name", "ex_date", "pay_date",
                                      "cash_per_share", "quantity", "amount", "currency",
@@ -1105,6 +1128,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pay-date", dest="pay_date", default=None, help="派息日")
     p.add_argument("--per-share", dest="per_share", type=float, default=0.0,
                    help="每股分红")
+    p.add_argument("--forecast", action="store_true",
+                   help="按当前持仓估算一年分红（配合 --year 或 --months）")
+    p.add_argument("--months", type=int, default=12,
+                   help="分红预期的回看月数（默认 12）")
     p.add_argument("--record", type=int, metavar="DIVIDEND_ID", default=None,
                    help="把这笔分红记入现金")
     p.add_argument("--date", default=None, help="入账日期")

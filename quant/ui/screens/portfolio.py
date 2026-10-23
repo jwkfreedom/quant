@@ -303,6 +303,7 @@ class PortfolioPanel(wx.Panel):
         self._build_positions()
         self._build_txns()
         self._build_dividends()
+        self._build_forecast()
 
         self.SetSizer(root)
         self.refresh()
@@ -444,6 +445,48 @@ class PortfolioPanel(wx.Panel):
         sizer.Add(self.dividend_grid, 1, wx.EXPAND)
         page.SetSizer(sizer)
 
+    def _build_forecast(self):
+        page = self._new_page("分红预期")
+        sizer = wx.BoxSizer(wx.VERTICAL)
+
+        bar = wx.BoxSizer(wx.HORIZONTAL)
+        bar.Add(text_label(page, "资金账户", colour=C.text_secondary), 0,
+                wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.forecast_account = style_input(wx.Choice(page, choices=[ALL_ACCOUNTS]))
+        self.forecast_account.SetSelection(0)
+        self.forecast_account.Bind(wx.EVT_CHOICE, lambda _evt: self.render_forecast())
+        bar.Add(self.forecast_account, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 16)
+
+        bar.Add(text_label(page, "分红口径", colour=C.text_secondary), 0,
+                wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.forecast_scope = style_input(wx.Choice(page, choices=["近 12 个月"]))
+        self.forecast_scope.SetSelection(0)
+        self.forecast_scope.Bind(wx.EVT_CHOICE, lambda _evt: self.render_forecast())
+        bar.Add(self.forecast_scope, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 16)
+
+        bar.Add(make_button(page, "重新计算", lambda _evt: self.render_forecast(), primary=True),
+                0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        bar.Add(make_button(page, "拉取分红", lambda _evt: self.on_refresh_dividends()),
+                0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        bar.Add(make_button(page, "导出",
+                            lambda _evt: self.on_export(self._forecast_frame,
+                                                        "dividend_forecast.csv")),
+                0, wx.ALIGN_CENTER_VERTICAL)
+        bar.AddStretchSpacer()
+        sizer.Add(bar, 0, wx.EXPAND | wx.BOTTOM, 10)
+
+        self.forecast_status = text_label(page, "还没有持仓数据", size=14, bold=True,
+                                          colour=C.text)
+        sizer.Add(self.forecast_status, 0, wx.BOTTOM, 4)
+        self.forecast_hint = hint_label(
+            page, "口径：窗口内每单位分红合计 × 当前持仓；是估算，不是承诺")
+        sizer.Add(self.forecast_hint, 0, wx.BOTTOM, 8)
+
+        self._forecast_frame = pd.DataFrame()
+        self.forecast_grid = DataFrameGrid(page)
+        sizer.Add(self.forecast_grid, 1, wx.EXPAND)
+        page.SetSizer(sizer)
+
     # ------------------------------------------------------------------
     # 数据加载
     # ------------------------------------------------------------------
@@ -476,11 +519,13 @@ class PortfolioPanel(wx.Panel):
         self.render_txns(data["txns"])
         self._sync_years(data["years"])
         self.render_dividends()
+        self.render_forecast()
         relayout(self, self.notebook, self.notebook.GetCurrentPage())
 
     def _sync_account_choices(self):
         labels = [ALL_ACCOUNTS] + [a["label"] for a in self._accounts]
-        for choice in (self.position_account, self.txn_account, self.dividend_account):
+        for choice in (self.position_account, self.txn_account,
+                       self.dividend_account, self.forecast_account):
             previous = choice.GetStringSelection()
             choice.Set(labels)
             index = labels.index(previous) if previous in labels else 0
@@ -492,6 +537,12 @@ class PortfolioPanel(wx.Panel):
         self.dividend_year.Set(labels)
         index = labels.index(previous) if previous in labels else 0
         self.dividend_year.SetSelection(index)
+
+        scopes = ["近 12 个月"] + [str(y) for y in years]
+        previous_scope = self.forecast_scope.GetStringSelection()
+        self.forecast_scope.Set(scopes)
+        scope_index = scopes.index(previous_scope) if previous_scope in scopes else 0
+        self.forecast_scope.SetSelection(scope_index)
 
     def _selected_account_id(self, choice) -> int | None:
         label = choice.GetStringSelection()
@@ -655,6 +706,45 @@ class PortfolioPanel(wx.Panel):
         display["recorded"] = ["是" if v else "否" for v in display["recorded"]]
         display = vm.portfolio_display(display)
         self.dividend_grid.SetDataFrame(display)
+
+    def render_forecast(self):
+        """按当前持仓估算一年分红。"""
+        account_id = self._selected_account_id(self.forecast_account)
+        text = self.forecast_scope.GetStringSelection().strip()
+        year = int(text) if text.isdigit() else None
+        try:
+            detail, summary = vm.portfolio_dividend_forecast(account_id=account_id,
+                                                             year=year)
+        except Exception as exc:  # pragma: no cover
+            error_dialog(self, exc)
+            return
+
+        self._forecast_frame = detail
+        if summary["count"] == 0:
+            self.forecast_status.SetLabel("还没有持仓")
+            self.forecast_hint.SetLabel("先到「持仓」页用「买入」或「数量调整」录入")
+            self.forecast_grid.SetDataFrame(pd.DataFrame())
+            return
+
+        total = summary["total_base"]
+        line = f"预计年度分红 {total:,.2f} 元"
+        if summary["market_value"]:
+            line += f"　年化股息率 {summary['yield_pct']:.2f}%"
+        line += f"　（{summary['scope']}，{summary['with_dividend']}/{summary['count']} 只有分红）"
+        self.forecast_status.SetLabel(line)
+
+        if summary["with_dividend"] == 0:
+            hint = "还没有分红数据：点「拉取分红」，或到「分红」页拉一次"
+        else:
+            hint = "口径：窗口内每单位分红合计 × 当前持仓；是估算，不是承诺"
+            if summary["missing_price"]:
+                hint += f"；{summary['missing_price']} 个产品缺价格，股息率不完整"
+        self.forecast_hint.SetLabel(hint)
+
+        display = vm.portfolio_display(detail)
+        keep = [c for c in ("资金账户", "代码", "名称", "数量", "每股分红", "最近除息日",
+                            "预期分红", "折合人民币", "股息率", "备注") if c in display.columns]
+        self.forecast_grid.SetDataFrame(display[keep] if keep else display)
 
     # ------------------------------------------------------------------
     # 操作

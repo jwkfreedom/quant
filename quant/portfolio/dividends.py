@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import date, timedelta
 
 import pandas as pd
 
@@ -317,6 +318,133 @@ def dividend_summary(conn, *, account_id: int | None = None, year: int | None = 
         "by_symbol": by_symbol,
         "year": year,
     }
+
+
+
+
+# --------------------------------------------------------------------------
+# 年度分红预期（按当前持仓估算）
+# --------------------------------------------------------------------------
+def _window(year: int | None, months: int | None, as_of: str | None) -> tuple[str, str]:
+    """把「年份」或「最近 N 个月」折算成 [start, end] 区间。"""
+    if year is not None:
+        return f"{year}-01-01", f"{year}-12-31"
+
+    end_date = date.fromisoformat(as_of) if as_of else date.today()
+    span = months if months and months > 0 else 12
+    start_date = end_date - timedelta(days=int(round(365 * span / 12)))
+    return start_date.isoformat(), end_date.isoformat()
+
+
+def dividend_forecast(conn, *, account_id: int | None = None,
+                      owner_id: int | None = None, year: int | None = None,
+                      months: int | None = 12, as_of: str | None = None) -> tuple:
+    """按当前持仓估算一年的分红。
+
+    口径：取窗口内（默认最近 12 个月）该产品的**每单位现金分红合计**，
+    乘以**当前持股数量**。这是「照最近一年的分红水平，未来一年大概能收多少」的估算，
+    不是承诺——公司少分红、减仓、清仓都会让实际金额变化。
+
+    返回 (明细 DataFrame, 汇总 dict)。
+    """
+    from quant.portfolio import prices as portfolio_prices
+    from quant.portfolio.service import Portfolio
+
+    book = Portfolio(conn)
+    # 用本地行情库的最新价，股息率才不是空的
+    frame = book.positions(account_id=account_id, owner_id=owner_id,
+                           prices=portfolio_prices.resolve_price_map(conn))
+
+    start, end = _window(year, months, as_of)
+    scope = f"{year} 年度" if year is not None else f"{start} ~ {end}"
+
+    columns = ["account", "symbol", "name", "kind", "risk", "quantity", "currency",
+               "cash_per_share", "last_ex_date", "forecast_amount", "forecast_base",
+               "market_value", "yield_pct", "note"]
+    if frame.empty:
+        return (pd.DataFrame(columns=columns),
+                {"scope": scope, "count": 0, "total_base": 0.0, "market_value": 0.0,
+                 "yield_pct": 0.0, "with_dividend": 0, "missing_price": 0})
+
+    # 一次取出窗口内所有分红记录，按产品汇总每单位分红
+    records = store.list_dividends(conn, start=start, end=end)
+    per_unit: dict[int, float] = {}
+    last_ex: dict[int, str] = {}
+    for record in records:
+        instrument_id = record["instrument_id"]
+        cash = float(record["cash_per_share"] or 0)
+        if cash <= 0:
+            continue
+        per_unit[instrument_id] = per_unit.get(instrument_id, 0.0) + cash
+        ex_date = record["ex_date"]
+        if ex_date and ex_date > last_ex.get(instrument_id, ""):
+            last_ex[instrument_id] = ex_date
+
+    rows = []
+    total_base = 0.0
+    total_value = 0.0
+    with_dividend = 0
+    missing_price = 0
+
+    for row in frame.itertuples():
+        if row.kind == schema.KIND_CASH:
+            continue                     # 现金不产生分红
+
+        instrument_id = getattr(row, "instrument_id", None)
+        cash_per_share = per_unit.get(instrument_id, 0.0)
+        quantity = float(row.quantity)
+        amount = round(quantity * cash_per_share, 2)
+        amount_base = round(book.to_base(amount, row.currency, as_of), 2)
+
+        has_price = row.market_value is not None and not pd.isna(row.market_value)
+        market_value = float(row.market_value) if has_price else None
+        if not has_price:
+            missing_price += 1
+
+        if cash_per_share > 0:
+            with_dividend += 1
+            note = ""
+        else:
+            note = "窗口内没有分红"
+
+        total_base += amount_base
+        if market_value:
+            total_value += book.to_base(market_value, row.currency, as_of)
+
+        rows.append({
+            "account": row.account,
+            "symbol": row.symbol,
+            "name": row.name,
+            "kind": row.kind,
+            "risk": row.risk,
+            "quantity": quantity,
+            "currency": row.currency,
+            "cash_per_share": round(cash_per_share, 6),
+            "last_ex_date": last_ex.get(instrument_id, ""),
+            "forecast_amount": amount,
+            "forecast_base": amount_base,
+            "market_value": market_value,
+            "yield_pct": (round(amount / market_value * 100, 2)
+                          if market_value else None),
+            "note": note,
+        })
+
+    detail = pd.DataFrame(rows, columns=columns)
+    if not detail.empty:
+        detail = detail.sort_values("forecast_base", ascending=False)
+
+    summary = {
+        "scope": scope,
+        "start": start,
+        "end": end,
+        "count": int(len(detail)),
+        "with_dividend": with_dividend,
+        "missing_price": missing_price,
+        "total_base": round(total_base, 2),
+        "market_value": round(total_value, 2),
+        "yield_pct": round(total_base / total_value * 100, 2) if total_value else 0.0,
+    }
+    return detail, summary
 
 
 def record_as_cash(conn, dividend_id: int, account_id: int, *,

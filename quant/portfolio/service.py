@@ -291,9 +291,9 @@ class Portfolio:
         rows = store.list_holdings(self.conn, account_id)
         if not rows:
             return pd.DataFrame(columns=[
-                "account_id", "account", "owner", "kind", "market", "symbol", "name",
-                "currency", "risk", "quantity", "cost_price", "price", "price_date",
-                "market_value", "cost_value", "pnl", "pnl_pct",
+                "account_id", "instrument_id", "account", "owner", "kind", "market",
+                "symbol", "name", "currency", "risk", "quantity", "cost_price",
+                "price", "price_date", "market_value", "cost_value", "pnl", "pnl_pct",
             ])
 
         accounts = {a["id"]: a for a in store.list_accounts(self.conn)}
@@ -318,6 +318,7 @@ class Portfolio:
 
             records.append({
                 "account_id": row["account_id"],
+                "instrument_id": row["instrument_id"],
                 "account": account.get("name", ""),
                 "owner": owner.get("name", ""),
                 "kind": row["kind"],

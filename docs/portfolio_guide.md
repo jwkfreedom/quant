@@ -99,6 +99,28 @@
 在分红列表里选中一行点「记入现金」（或 `quant portfolio-dividend --record <id> --account 华泰证券`），
 才会生成一笔 `dividend` 流水并标记为已入账。
 
+### 一年分红预期（接口/界面/命令行）
+
+按**当前持仓**估算未来一年大概能收多少分红，口径是：
+
+    预期年度分红 = 窗口内该产品的每单位分红合计 × 当前持股数量
+
+- **窗口**默认取「最近 12 个月」；也可以指定某个自然年度（例如 2025）。
+- A 股个股的每单位分红来自 `stock_fhps_detail_em`（每 10 股派现 ÷ 10），
+  ETF / 场外基金来自 `fund_fh_em`。
+- 现金不参与计算。
+- 同时给出**年化股息率** = 预期分红 ÷ 当前市值（缺价格的产品这一列为空）。
+
+界面：资产管理 →「分红预期」页签，选资金账户和口径，点「重新计算」。
+命令行：
+
+    quant portfolio-dividend --forecast                 最近 12 个月
+    quant portfolio-dividend --forecast --year 2025     指定 2025 年度
+    quant portfolio-dividend --forecast --months 24     最近 24 个月
+
+> 这是**估算**，不是承诺：公司少分红、你减仓、送转股、红利税都会让实际到账金额变化。
+> 如果整张表都是 0，说明还没拉过分红数据，先跑一次 `quant portfolio-dividend --refresh`。
+
 ### 手动登记（美股或数据源缺漏）
 
     quant portfolio-dividend --add AAPL --market US --ex-date 2026-02-07 --per-share 0.25

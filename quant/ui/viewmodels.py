@@ -657,6 +657,18 @@ def portfolio_dividends(account_id: int | None = None,
     return frame, summary
 
 
+def portfolio_dividend_forecast(account_id: int | None = None,
+                                owner_id: int | None = None,
+                                year: int | None = None,
+                                months: int = 12) -> tuple[pd.DataFrame, dict]:
+    """按当前持仓估算一年的分红（明细 + 汇总）。"""
+    from quant.portfolio import dividends as portfolio_dividends_module
+
+    with _portfolio_db() as (conn, _book):
+        return portfolio_dividends_module.dividend_forecast(
+            conn, account_id=account_id, owner_id=owner_id, year=year, months=months)
+
+
 def portfolio_years() -> list[int]:
     """分红里出现过的年份，倒序。"""
     from quant.portfolio import store as portfolio_store
