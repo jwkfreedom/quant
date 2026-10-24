@@ -107,6 +107,64 @@ class Portfolio:
             instrument = store.get_instrument(self.conn, instrument_id)
         return instrument
 
+    def _replay_holding(self, account_id: int, instrument_id: int, *,
+                        exclude_txn_id: int) -> tuple[float, float, str | None,
+                                                      list[tuple[int, float]], float]:
+        """按剩余流水重放某账户某产品的持仓（用于删除交易后重建）。
+
+        交易是录入时按先后顺序逐步算持仓的，所以这里也按 id 排序，
+        才能和原来的移动加权平均口径保持一致。
+
+        返回 (数量, 成本价, 建仓日, [(卖出行 id, 重算后的已实现盈亏)], 过程中最低数量)。
+        最低数量用来发现「卖出超过当时持仓」的历史不一致。
+        """
+        rows = self.conn.execute(
+            f"SELECT id, action, quantity, price, fee, trade_date, realized_pnl "
+            f"FROM {schema.TABLE_TXN} "
+            f"WHERE account_id = ? AND instrument_id = ? AND id <> ? ORDER BY id",
+            (account_id, instrument_id, exclude_txn_id),
+        ).fetchall()
+
+        quantity = 0.0
+        cost_price = 0.0
+        opened_at = None
+        min_quantity = 0.0
+        realized: list[tuple[int, float]] = []
+
+        for row in rows:
+            action = row["action"]
+            delta = float(row["quantity"])
+            price = float(row["price"])
+            fee = float(row["fee"])
+
+            if action == schema.ACTION_BUY:
+                total_cost = cost_price * quantity + price * delta + fee
+                quantity = _round(quantity + delta)
+                cost_price = _round(total_cost / quantity) if quantity > 1e-9 else 0.0
+                if opened_at is None:
+                    opened_at = row["trade_date"]
+            elif action == schema.ACTION_SELL:
+                pnl = _round((price - cost_price) * delta - fee)
+                old = row["realized_pnl"]
+                if old is None or abs(float(old) - pnl) > 1e-6:
+                    realized.append((int(row["id"]), pnl))
+                quantity = _round(quantity - delta)
+                min_quantity = min(min_quantity, quantity)
+                if abs(quantity) <= 1e-9:
+                    quantity, cost_price, opened_at = 0.0, 0.0, None
+            elif action == schema.ACTION_ADJUST:
+                # adjust 流水的 quantity 列存的是差额，price 列存的是调整后的成本价
+                quantity = _round(quantity + delta)
+                cost_price = _round(price)
+                min_quantity = min(min_quantity, quantity)
+                if opened_at is None:
+                    opened_at = row["trade_date"]
+                if abs(quantity) <= 1e-9:
+                    quantity, cost_price, opened_at = 0.0, 0.0, None
+            # deposit / withdraw / dividend 是现金产品，不影响非现金持仓
+
+        return quantity, cost_price, opened_at, realized, min_quantity
+
     # ------------------------------------------------------------------
     # 买卖
     # ------------------------------------------------------------------
@@ -193,6 +251,114 @@ class Portfolio:
             "realized_pnl": realized,
             "cash": cash_after,
             "warnings": [],
+        }
+
+    def delete_txn(self, txn_id: int) -> dict:
+        """删除一条买入 / 卖出流水，并按剩余流水重建持仓与现金。
+
+        规则：
+        - 持仓数量与成本按剩余流水重放（与录入时的移动加权平均口径一致）；
+        - 现金按被删记录的方向直接冲回（现金是加法，不受成本口径影响）；
+        - 后续卖出的已实现盈亏会随之更新；
+        - 删除后持仓会变成负数时拒绝（这笔买入已被后面的卖出用掉了）。
+        """
+        txn = store.get_txn(self.conn, txn_id)
+        if txn is None:
+            raise ValueError(f"交易记录不存在: {txn_id}")
+
+        action = txn["action"]
+        if action not in (schema.ACTION_BUY, schema.ACTION_SELL):
+            raise ValueError(
+                "只能删除「买入」或「卖出」记录；"
+                "数量调整请用「数量调整」修正，现金存取请用存入 / 取出"
+            )
+        if txn["kind"] == schema.KIND_CASH:
+            raise ValueError("现金记录不能当作买卖记录删除")
+
+        account_id = int(txn["account_id"])
+        instrument_id = int(txn["instrument_id"])
+        quantity = float(txn["quantity"])
+        price = float(txn["price"])
+        fee = float(txn["fee"])
+        label = txn["symbol"] or txn["name"] or f"#{instrument_id}"
+
+        new_qty, new_cost, opened_at, realized, min_qty = self._replay_holding(
+            account_id, instrument_id, exclude_txn_id=txn_id)
+        if min_qty < -1e-9:
+            action_name = schema.ACTION_NAMES.get(action, action)
+            raise ValueError(
+                f"删除后 {label} 的持仓会出现负数（{min_qty:g}）：这笔{action_name}"
+                f"已经被后面的卖出用掉了。请先删除或调整对应的卖出记录。"
+            )
+        if new_qty <= 1e-9:
+            new_qty, new_cost = 0.0, 0.0
+
+        # 现金冲回：买入时付出 (成交额 + 手续费)，卖出时收到 (成交额 - 手续费)
+        cash_id, cash_balance = self._cash_holding(account_id)
+        cash_delta = ((price * quantity + fee) if action == schema.ACTION_BUY
+                      else -(price * quantity - fee))
+        new_cash = _round(cash_balance + cash_delta)
+
+        # 删除流水、重建持仓、修正已实现盈亏、更新现金必须在同一个事务里
+        with self.conn:
+            self.conn.execute(f"DELETE FROM {schema.TABLE_TXN} WHERE id = ?", (txn_id,))
+            if new_qty == 0.0:
+                self.conn.execute(
+                    f"DELETE FROM {schema.TABLE_HOLDING} "
+                    f"WHERE account_id = ? AND instrument_id = ?",
+                    (account_id, instrument_id),
+                )
+            else:
+                self.conn.execute(
+                    f"INSERT INTO {schema.TABLE_HOLDING} "
+                    f"(account_id, instrument_id, quantity, cost_price, opened_at, updated_at) "
+                    f"VALUES (?, ?, ?, ?, ?, ?) "
+                    f"ON CONFLICT(account_id, instrument_id) DO UPDATE SET "
+                    f"quantity = excluded.quantity, cost_price = excluded.cost_price, "
+                    f"updated_at = excluded.updated_at, "
+                    f"opened_at = COALESCE(excluded.opened_at, opened_at)",
+                    (account_id, instrument_id, new_qty, new_cost,
+                     opened_at or store.today(), store.today()),
+                )
+            for sell_id, pnl in realized:
+                self.conn.execute(
+                    f"UPDATE {schema.TABLE_TXN} SET realized_pnl = ? WHERE id = ?",
+                    (pnl, sell_id),
+                )
+            self.conn.execute(
+                f"INSERT INTO {schema.TABLE_HOLDING} "
+                f"(account_id, instrument_id, quantity, cost_price, opened_at, updated_at) "
+                f"VALUES (?, ?, ?, 1.0, ?, ?) "
+                f"ON CONFLICT(account_id, instrument_id) DO UPDATE SET "
+                f"quantity = excluded.quantity, cost_price = 1.0, "
+                f"updated_at = excluded.updated_at",
+                (account_id, cash_id, new_cash, store.today(), store.today()),
+            )
+
+        warnings = []
+        if new_cash < 0:
+            warnings.append(f"删除后现金为负（{new_cash:,.2f}），请补录「存入现金」")
+        logger.info("删除流水 #%s：%s %s %s @ %s；重算持仓 %s，现金 %s",
+                    txn_id, action, txn["symbol"], quantity, price, new_qty, new_cash)
+        return {
+            "txn_id": txn_id,
+            "action": action,
+            "action_name": schema.ACTION_NAMES.get(action, action),
+            "account_id": account_id,
+            "account_name": txn["account_name"],
+            "instrument_id": instrument_id,
+            "symbol": txn["symbol"],
+            "name": txn["name"],
+            "trade_date": txn["trade_date"],
+            "deleted_quantity": quantity,
+            "price": price,
+            "fee": fee,
+            "quantity": new_qty,
+            "cost_price": new_cost,
+            "cash": new_cash,
+            "cash_delta": _round(cash_delta),
+            "realized_updated": len(realized),
+            "warnings": warnings,
         }
 
     # ------------------------------------------------------------------

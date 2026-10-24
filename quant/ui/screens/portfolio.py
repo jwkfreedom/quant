@@ -394,6 +394,9 @@ class PortfolioPanel(wx.Panel):
         self.txn_account.SetSelection(0)
         self.txn_account.Bind(wx.EVT_CHOICE, lambda _evt: self.render_txns())
         bar.Add(self.txn_account, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 16)
+        delete_button = make_button(page, "删除选中", lambda _evt: self.on_delete_txn())
+        delete_button.SetToolTip("删除选中的买入 / 卖出记录，并按剩余流水重算持仓与现金")
+        bar.Add(delete_button, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
         bar.Add(make_button(page, "导出", lambda _evt: self.on_export(self._txn_frame,
                                                                       "portfolio_txns.csv")),
                 0, wx.ALIGN_CENTER_VERTICAL)
@@ -404,6 +407,7 @@ class PortfolioPanel(wx.Panel):
 
         self._txn_frame = pd.DataFrame()
         self.txn_grid = DataFrameGrid(page)
+        self.txn_grid.on_context_menu = self._on_txn_context_menu
         sizer.Add(self.txn_grid, 1, wx.EXPAND)
         page.SetSizer(sizer)
 
@@ -459,7 +463,7 @@ class PortfolioPanel(wx.Panel):
 
         bar.Add(text_label(page, "分红口径", colour=C.text_secondary), 0,
                 wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
-        self.forecast_scope = style_input(wx.Choice(page, choices=["近 12 个月"]))
+        self.forecast_scope = style_input(wx.Choice(page, choices=["最近完整年度"]))
         self.forecast_scope.SetSelection(0)
         self.forecast_scope.Bind(wx.EVT_CHOICE, lambda _evt: self.render_forecast())
         bar.Add(self.forecast_scope, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 16)
@@ -504,6 +508,7 @@ class PortfolioPanel(wx.Panel):
             "risk": vm.portfolio_risk(),
             "txns": vm.portfolio_txns(limit=500),
             "years": vm.portfolio_years(),
+            "report_years": vm.portfolio_report_years(),
         }
 
     def _render_all(self, data: dict):
@@ -517,7 +522,7 @@ class PortfolioPanel(wx.Panel):
         self._txn_frame = data["txns"]
         self.render_positions(data["positions"])
         self.render_txns(data["txns"])
-        self._sync_years(data["years"])
+        self._sync_years(data["years"], data["report_years"])
         self.render_dividends()
         self.render_forecast()
         relayout(self, self.notebook, self.notebook.GetCurrentPage())
@@ -531,14 +536,16 @@ class PortfolioPanel(wx.Panel):
             index = labels.index(previous) if previous in labels else 0
             choice.SetSelection(index)
 
-    def _sync_years(self, years):
+    def _sync_years(self, years, report_years=None):
         labels = ["全部"] + [str(y) for y in years]
         previous = self.dividend_year.GetStringSelection()
         self.dividend_year.Set(labels)
         index = labels.index(previous) if previous in labels else 0
         self.dividend_year.SetSelection(index)
 
-        scopes = ["近 12 个月"] + [str(y) for y in years]
+        # 分红预期按财报年度，不按除息日年份；没有报告期时退回除息日年份
+        scope_years = report_years if report_years else years
+        scopes = ["最近完整年度"] + [str(y) for y in scope_years]
         previous_scope = self.forecast_scope.GetStringSelection()
         self.forecast_scope.Set(scopes)
         scope_index = scopes.index(previous_scope) if previous_scope in scopes else 0
@@ -684,6 +691,83 @@ class PortfolioPanel(wx.Panel):
         self.txn_grid.SetDataFrame(display)
         self.txn_status.SetLabel(f"共 {len(frame)} 条")
 
+    @staticmethod
+    def _txn_id_of(row: dict) -> int | None:
+        """从表格行里取流水 id（展示层把 id 改成了「序号」）。"""
+        for key in ("序号", "id"):
+            if key in row:
+                try:
+                    return int(row[key])
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    def _raw_txn(self, txn_id: int) -> dict | None:
+        """按 id 找回未改名的原始流水（表格可能被排序/改名）。"""
+        frame = self._txn_frame
+        if frame is None or frame.empty or "id" not in frame.columns:
+            return None
+        matched = frame[frame["id"] == txn_id]
+        return matched.iloc[0].to_dict() if not matched.empty else None
+
+    def _on_txn_context_menu(self, row: dict, menu):
+        menu.separator()
+        menu.add("删除这条买入 / 卖出记录", lambda _row: self.on_delete_txn(row))
+
+    def on_delete_txn(self, row: dict | None = None):
+        """删除选中的买入/卖出记录（持仓与现金会按剩余流水重算）。"""
+        row = row or self.txn_grid.selected_row()
+        if not row:
+            wx.MessageBox("请先在表格里选中一条买入 / 卖出记录", "提示",
+                          wx.OK | wx.ICON_INFORMATION, self)
+            return
+
+        txn_id = self._txn_id_of(row)
+        raw = self._raw_txn(txn_id) if txn_id is not None else None
+        if raw is None:
+            wx.MessageBox("找不到这条流水的原始数据，请点「刷新数据」后重试", "提示",
+                          wx.OK | wx.ICON_WARNING, self)
+            return
+
+        action = raw.get("action")
+        if action not in (pschema.ACTION_BUY, pschema.ACTION_SELL):
+            wx.MessageBox(
+                "只支持删除「买入」或「卖出」记录。\n"
+                "数量调整请用「数量调整」修正，现金存取请用「存入现金 / 取出资金」。",
+                "不能删除", wx.OK | wx.ICON_INFORMATION, self)
+            return
+
+        action_name = pschema.ACTION_NAMES.get(action, action)
+        detail = (f"{raw['trade_date']}　{action_name}　{raw['symbol']} {raw['name']}\n"
+                  f"数量 {float(raw['quantity']):g}　"
+                  f"成交价 {float(raw['price']):,.4f}　"
+                  f"手续费 {float(raw['fee']):,.2f}")
+        message = (f"确定删除这条记录？\n\n{detail}\n\n"
+                   "删除后会按剩余流水重算该产品的持仓数量与成本，并冲回对应现金。\n"
+                   "此操作不可撤销。")
+        if wx.MessageBox(message, "删除交易记录",
+                         wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING, self) != wx.YES:
+            return
+
+        self.runner.run(lambda: vm.portfolio_delete_txn(txn_id),
+                        self._after_delete_txn,
+                        on_error=lambda exc: error_dialog(self, exc),
+                        busy_message="删除交易记录…")
+
+    def _after_delete_txn(self, result: dict):
+        text = (f"已删除{result['action_name']}：{result['trade_date']} "
+                f"{result['symbol']} {result['deleted_quantity']:g} @ "
+                f"{result['price']:,.4f}")
+        text += (f"　重算后持仓 {result['quantity']:g}，"
+                 f"成本 {result['cost_price']:,.4f}，现金 {result['cash']:,.2f}")
+        if result.get("realized_updated"):
+            text += f"；已更新 {result['realized_updated']} 笔卖出的已实现盈亏"
+        self._flash = text
+        if result.get("warnings"):
+            wx.MessageBox("；".join(result["warnings"]), "提示",
+                          wx.OK | wx.ICON_WARNING, self)
+        self.refresh()
+
     def render_dividends(self):
         account_id = self._selected_account_id(self.dividend_account)
         year_text = self.dividend_year.GetStringSelection()
@@ -734,16 +818,28 @@ class PortfolioPanel(wx.Panel):
         self.forecast_status.SetLabel(line)
 
         if summary["with_dividend"] == 0:
-            hint = "还没有分红数据：点「拉取分红」，或到「分红」页拉一次"
+            if summary.get("missing_report_period"):
+                hint = (f"有 {summary['missing_report_period']} 个产品的分红记录缺少报告期；"
+                        "请点「拉取分红」补齐后再计算")
+            else:
+                hint = "还没有分红数据：点「拉取分红」，或到「分红」页拉一次"
         else:
-            hint = "口径：窗口内每单位分红合计 × 当前持仓；是估算，不是承诺"
+            if year is not None:
+                hint = f"口径：{year} 年度分红合计 × 当前持仓；是估算，不是承诺"
+            else:
+                hint = ("口径：各产品最近一个完整财报年度的分红合计 × 当前持仓；"
+                        "最近年度只有中报时自动回退上一年度。是估算，不是承诺")
+            if summary.get("missing_report_period"):
+                hint += (f"；{summary['missing_report_period']} 个产品的分红记录"
+                         "缺少报告期，结果可能不完整")
             if summary["missing_price"]:
                 hint += f"；{summary['missing_price']} 个产品缺价格，股息率不完整"
         self.forecast_hint.SetLabel(hint)
 
         display = vm.portfolio_display(detail)
-        keep = [c for c in ("资金账户", "代码", "名称", "数量", "每股分红", "最近除息日",
-                            "预期分红", "折合人民币", "股息率", "备注") if c in display.columns]
+        keep = [c for c in ("资金账户", "代码", "名称", "数量", "分红年度", "分红次数",
+                            "每股分红", "最近除息日", "预期分红", "折合人民币",
+                            "股息率", "备注") if c in display.columns]
         self.forecast_grid.SetDataFrame(display[keep] if keep else display)
 
     # ------------------------------------------------------------------
@@ -784,12 +880,15 @@ class PortfolioPanel(wx.Panel):
                         busy_message="拉取分红数据…（联网）")
 
     def _after_dividend_refresh(self, result: dict):
-        text = f"写入/更新 {result['saved']} 条分红"
+        text = f"写入/更新 {result['saved']} 条分红（分红预期已重算）"
         if result["failed"]:
             text += "；未取到：" + "、".join(result["failed"][:6])
         wx.MessageBox(text, "分红拉取完成", wx.OK | wx.ICON_INFORMATION, self)
-        self._sync_years(vm.portfolio_years())
+        self._sync_years(vm.portfolio_years(), vm.portfolio_report_years())
         self.render_dividends()
+        # 「分红预期」页也可能发起拉取，必须一起重算，否则页面会一直显示
+        # 「还没有分红数据」，让人以为没拉到。
+        self.render_forecast()
 
     # ------------------------------------------------------------------
     # 新建账户

@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 #: 资产库结构版本
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # --------------------------------------------------------------------------
 # 表名
@@ -244,6 +244,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_DIVIDEND} (
     instrument_id   INTEGER NOT NULL REFERENCES {TABLE_INSTRUMENT}(id),
     ex_date         TEXT NOT NULL,
     pay_date        TEXT,
+    report_period   TEXT,
     cash_per_share  REAL NOT NULL DEFAULT 0,
     stock_per_share REAL NOT NULL DEFAULT 0,
     currency        TEXT NOT NULL DEFAULT 'CNY',
@@ -292,6 +293,9 @@ DISPLAY_NAMES: dict[str, str] = {
     "note": "备注",
     "ex_date": "除息日",
     "pay_date": "派息日",
+    "report_period": "报告期",
+    "fiscal_year": "分红年度",
+    "dividend_count": "分红次数",
     "cash_per_share": "每股分红",
     "stock_per_share": "每股送转",
     "cash_amount": "分红金额",

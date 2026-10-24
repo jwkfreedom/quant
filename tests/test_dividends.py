@@ -151,8 +151,173 @@ def test_upsert_is_idempotent(scene):
     assert frame.iloc[0]["cash_per_share"] == pytest.approx(2.5)
 
 
+def test_upsert_stores_and_preserves_report_period(scene):
+    book, _account, iid = scene
+    _add(book, iid, "2026-06-20", 2.0, report_period="2025-12-31")
+
+    rows = store.list_dividends(book.conn)
+    assert rows[0]["report_period"] == "2025-12-31"
+
+    # 同一笔再登记但不带报告期时，保留原来的报告期
+    _add(book, iid, "2026-06-20", 2.5)
+    rows = store.list_dividends(book.conn)
+    assert rows[0]["report_period"] == "2025-12-31"
+
+
 def test_stock_dividend_parsing_offline():
     """A股分红比例是「每 10 股」，解析时要除以 10。"""
     assert dividends.A_SHARE_LOT == 10.0
-    records = dividends.fetch_stock_dividends("__definitely_not_a_symbol__")
+    records = dividends.fetch_stock_dividends("__definitely_not_a_symbol__", attempts=1)
     assert records == []
+
+
+def test_stock_dividends_falls_back_to_cninfo(monkeypatch):
+    """东财失败时，用巨潮资讯兜底，000408 这类股票不能误报「没分红」。"""
+    import pandas as pd
+
+    def fake_fetch_frame(func, *, attempts=3, **kwargs):
+        if func.__name__ == "stock_fhps_detail_em":
+            return None, RuntimeError("eastmoney timeout")
+        return pd.DataFrame([{
+            "除权日": "2026-04-17",
+            "派息日": "2026-04-17",
+            "派息比例": 15.0,
+            "送股比例": 0.0,
+            "转增比例": 0.0,
+            "报告时间": "2025年报",
+            "实施方案分红说明": "10派15元(含税)",
+        }]), None
+
+    monkeypatch.setattr(dividends, "_fetch_frame", fake_fetch_frame)
+    records = dividends.fetch_stock_dividends("000408")
+    assert len(records) == 1
+    assert records[0]["ex_date"] == "2026-04-17"
+    assert records[0]["pay_date"] == "2026-04-17"
+    assert records[0]["report_period"] == "2025-12-31"
+    assert records[0]["cash_per_share"] == pytest.approx(1.5)
+    assert records[0]["stock_per_share"] == pytest.approx(0.0)
+
+
+def test_stock_dividends_reads_report_period_from_em(monkeypatch):
+    """东财的「报告期」要一起存下来，预测才能按财报年度归集。"""
+    import pandas as pd
+
+    def fake_fetch_frame(func, *, attempts=3, **kwargs):
+        assert func.__name__ == "stock_fhps_detail_em"
+        return pd.DataFrame([{
+            "报告期": "2025-12-31",
+            "除权除息日": "2026-06-26",
+            "现金分红-现金分红比例": 4.4,
+            "送转股份-送转总比例": 0.0,
+            "方案进度": "实施分配",
+            "现金分红-现金分红比例描述": "10派4.40元",
+        }]), None
+
+    monkeypatch.setattr(dividends, "_fetch_frame", fake_fetch_frame)
+    records = dividends.fetch_stock_dividends("601919")
+    assert len(records) == 1
+    assert records[0]["report_period"] == "2025-12-31"
+    assert records[0]["cash_per_share"] == pytest.approx(0.44)
+
+
+def test_stock_dividends_empty_em_does_not_report_fallback_error(monkeypatch):
+    """东财明确返回空表（确实没分红）时，巨潮失败不应误报为整体拉取失败。"""
+    import pandas as pd
+
+    def fake_fetch_frame(func, *, attempts=3, **kwargs):
+        if func.__name__ == "stock_fhps_detail_em":
+            return pd.DataFrame(), None
+        return None, RuntimeError("cninfo timeout")
+
+    monkeypatch.setattr(dividends, "_fetch_frame", fake_fetch_frame)
+    errors: list[str] = []
+    records = dividends.fetch_stock_dividends("000408", errors=errors)
+    assert records == []
+    assert errors == []
+
+
+def test_refresh_dividends_saves_stock_records(book, monkeypatch):
+    owner = book.create_owner("王大")
+    account = book.add_account(owner, "华泰证券")
+    book.buy(account, kind="stock", market="CN", symbol="000408",
+             name="藏格矿业", quantity=400, price=70, trade_date="2026-04-24")
+
+    def fake_fetch(symbol, *, errors=None, attempts=3):
+        assert symbol == "000408"
+        return [{
+            "ex_date": "2026-09-04",
+            "pay_date": None,
+            "report_period": "2025-12-31",
+            "cash_per_share": 1.0,
+            "stock_per_share": 0.0,
+            "note": "10派10.00元",
+        }]
+
+    monkeypatch.setattr(dividends, "fetch_stock_dividends", fake_fetch)
+    result = dividends.refresh_dividends(book.conn)
+    assert result == {"saved": 1, "failed": []}
+
+    rows = store.list_dividends(book.conn)
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "000408"
+    assert rows[0]["ex_date"] == "2026-09-04"
+    assert rows[0]["cash_per_share"] == pytest.approx(1.0)
+
+    detail, summary = dividends.dividend_forecast(book.conn, account_id=account,
+                                                  as_of="2026-10-24")
+    assert summary["with_dividend"] == 1
+    assert detail.iloc[0]["symbol"] == "000408"
+    assert detail.iloc[0]["cash_per_share"] == pytest.approx(1.0)
+    assert detail.iloc[0]["forecast_amount"] == pytest.approx(400.0)
+
+
+def test_refresh_dividends_reports_fetch_error(book, monkeypatch):
+    owner = book.create_owner("王大")
+    account = book.add_account(owner, "华泰证券")
+    book.buy(account, kind="stock", market="CN", symbol="000408",
+             name="藏格矿业", quantity=400, price=70, trade_date="2026-04-24")
+
+    def fake_fetch(symbol, *, errors=None, attempts=3):
+        if errors is not None:
+            errors.append("ReadTimeout: timed out")
+        return []
+
+    monkeypatch.setattr(dividends, "fetch_stock_dividends", fake_fetch)
+    result = dividends.refresh_dividends(book.conn)
+    assert result["saved"] == 0
+    assert "000408" in result["failed"][0]
+    assert "拉取失败" in result["failed"][0]
+    assert "ReadTimeout" in result["failed"][0]
+
+
+def test_refresh_dividends_uses_fund_data_for_etf_like_stock(book, monkeypatch):
+    """510300 这类 ETF 被误录成 stock 时，也要走基金分红接口。"""
+    owner = book.create_owner("王大")
+    account = book.add_account(owner, "华泰证券")
+    book.buy(account, kind="stock", market="CN", symbol="510300",
+             name="沪深300ETF", quantity=1000, price=4, trade_date="2026-04-24")
+
+    called = {}
+
+    def fake_fund(symbols, *, errors=None, attempts=3):
+        called["symbols"] = set(symbols)
+        return {"510300": [{
+            "ex_date": "2026-09-04",
+            "pay_date": None,
+            "cash_per_share": 0.05,
+            "stock_per_share": 0.0,
+            "note": "沪深300ETF",
+        }]}
+
+    def fake_stock(symbol, *, errors=None, attempts=3):
+        raise AssertionError("ETF 不应再走股票分红接口")
+
+    monkeypatch.setattr(dividends, "fetch_fund_dividends", fake_fund)
+    monkeypatch.setattr(dividends, "fetch_stock_dividends", fake_stock)
+    result = dividends.refresh_dividends(book.conn)
+
+    assert called["symbols"] == {"510300"}
+    assert result == {"saved": 1, "failed": []}
+    rows = store.list_dividends(book.conn)
+    assert rows[0]["symbol"] == "510300"
+

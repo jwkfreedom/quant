@@ -332,6 +332,204 @@ def test_txn_list_is_filtered_by_account(setup_book):
     assert htsc_txns[0]["currency"] == "CNY"
 
 
+def _txn_rows(book, account_id, *, symbol=None, action=None):
+    rows = store.list_txns(book.conn, account_id=account_id)
+    return [row for row in rows
+            if (symbol is None or row["symbol"] == symbol)
+            and (action is None or row["action"] == action)]
+
+
+def test_delete_buy_rebuilds_quantity_cost_and_cash(book):
+    owner = book.create_owner("王大")
+    account = book.add_account(owner, "华泰证券")
+    book.deposit(account, 1_000_000, trade_date="2026-01-02")
+    book.buy(account, kind="stock", market="CN", symbol="600519", name="贵州茅台",
+             quantity=100, price=1500, fee=15, trade_date="2026-01-05")
+    book.buy(account, kind="stock", market="CN", symbol="600519",
+             quantity=100, price=1600, fee=16, trade_date="2026-02-05")
+
+    second_buy = next(row for row in _txn_rows(book, account, symbol="600519",
+                                               action=schema.ACTION_BUY)
+                      if row["price"] == 1600)
+    result = book.delete_txn(second_buy["id"])
+
+    expected_cost = (1500 * 100 + 15) / 100
+    assert result["quantity"] == pytest.approx(100)
+    assert result["cost_price"] == pytest.approx(expected_cost)
+    assert result["cash"] == pytest.approx(1_000_000 - (1500 * 100 + 15))
+    assert result["realized_updated"] == 0
+
+    row = book.positions().set_index("symbol").loc["600519"]
+    assert row["quantity"] == pytest.approx(100)
+    assert row["cost_price"] == pytest.approx(expected_cost)
+    assert store.get_txn(book.conn, second_buy["id"]) is None
+
+
+def test_delete_sell_restores_holding_and_cash(book):
+    owner = book.create_owner("王大")
+    account = book.add_account(owner, "华泰证券")
+    book.deposit(account, 200_000, trade_date="2026-01-02")
+    book.buy(account, kind="stock", market="CN", symbol="600519", name="贵州茅台",
+             quantity=100, price=1500, fee=15, trade_date="2026-01-05")
+    book.sell(account, kind="stock", market="CN", symbol="600519",
+              quantity=50, price=1600, fee=8, trade_date="2026-03-05")
+
+    sell_txn = _txn_rows(book, account, symbol="600519", action=schema.ACTION_SELL)[0]
+    result = book.delete_txn(sell_txn["id"])
+
+    assert result["quantity"] == pytest.approx(100)
+    assert result["cost_price"] == pytest.approx((1500 * 100 + 15) / 100)
+    assert result["cash"] == pytest.approx(200_000 - (1500 * 100 + 15))
+    assert _txn_rows(book, account, symbol="600519", action=schema.ACTION_SELL) == []
+    assert book.positions().set_index("symbol").loc["600519", "quantity"] == pytest.approx(100)
+
+
+def test_delete_only_buy_removes_the_holding(book):
+    owner = book.create_owner("王大")
+    account = book.add_account(owner, "华泰证券")
+    book.deposit(account, 10_000, trade_date="2026-01-02")
+    book.buy(account, kind="stock", market="CN", symbol="000001", name="平安银行",
+             quantity=100, price=10, trade_date="2026-01-05")
+
+    buy_txn = _txn_rows(book, account, symbol="000001", action=schema.ACTION_BUY)[0]
+    result = book.delete_txn(buy_txn["id"])
+
+    assert result["quantity"] == 0
+    assert result["cash"] == pytest.approx(10_000)
+    assert "000001" not in set(book.positions()["symbol"])
+
+
+def test_delete_buy_keeps_opening_position_from_adjust(book):
+    owner = book.create_owner("王大")
+    account = book.add_account(owner, "华泰证券")
+    book.adjust(account, kind="etf", market="CN", symbol="510300", name="沪深300ETF",
+                quantity=10_000, cost_price=3.9, trade_date="2026-01-01")
+    book.deposit(account, 10_000, trade_date="2026-01-02")
+    book.buy(account, kind="etf", market="CN", symbol="510300",
+             quantity=1_000, price=4.2, fee=5, trade_date="2026-02-02")
+
+    buy_txn = _txn_rows(book, account, symbol="510300", action=schema.ACTION_BUY)[0]
+    result = book.delete_txn(buy_txn["id"])
+
+    assert result["quantity"] == pytest.approx(10_000)
+    assert result["cost_price"] == pytest.approx(3.9)
+    assert result["cash"] == pytest.approx(10_000)
+    row = book.positions().set_index("symbol").loc["510300"]
+    assert row["quantity"] == pytest.approx(10_000)
+    assert row["cost_price"] == pytest.approx(3.9)
+
+
+def test_delete_sell_after_reopen_uses_new_opening_date(book):
+    owner = book.create_owner("王大")
+    account = book.add_account(owner, "华泰证券")
+    book.deposit(account, 10_000, trade_date="2026-01-02")
+    book.buy(account, kind="stock", market="CN", symbol="600519",
+             quantity=100, price=10, trade_date="2026-01-05")
+    book.sell(account, kind="stock", market="CN", symbol="600519",
+              quantity=100, price=12, trade_date="2026-02-05")
+    book.buy(account, kind="stock", market="CN", symbol="600519",
+             quantity=100, price=20, trade_date="2026-03-05")
+    book.sell(account, kind="stock", market="CN", symbol="600519",
+              quantity=50, price=25, trade_date="2026-04-05")
+
+    last_sell = _txn_rows(book, account, symbol="600519", action=schema.ACTION_SELL)[0]
+    book.delete_txn(last_sell["id"])
+
+    instrument = store.find_instrument(book.conn, "stock", "CN", "600519")
+    holding = store.get_holding(book.conn, account, instrument["id"])
+    assert holding["quantity"] == pytest.approx(100)
+    assert holding["cost_price"] == pytest.approx(20)
+    assert holding["opened_at"] == "2026-03-05"
+
+
+def test_delete_buy_used_by_later_sell_is_rejected(book):
+    owner = book.create_owner("王大")
+    account = book.add_account(owner, "华泰证券")
+    book.deposit(account, 10_000, trade_date="2026-01-02")
+    book.buy(account, kind="stock", market="CN", symbol="600519",
+             quantity=100, price=10, trade_date="2026-01-05")
+    book.sell(account, kind="stock", market="CN", symbol="600519",
+              quantity=100, price=12, trade_date="2026-03-05")
+
+    buy_txn = _txn_rows(book, account, symbol="600519", action=schema.ACTION_BUY)[0]
+    with pytest.raises(ValueError) as excinfo:
+        book.delete_txn(buy_txn["id"])
+    assert "已经被后面的卖出用掉" in str(excinfo.value)
+
+    # 拒绝后什么都没变：流水还在、现金还是 10200、持仓仍是 0
+    assert store.get_txn(book.conn, buy_txn["id"]) is not None
+    assert book.cash_balance(account) == pytest.approx(10_200)
+    assert "600519" not in set(book.positions()["symbol"])
+
+
+def test_delete_buy_with_intermediate_oversell_is_rejected(book):
+    owner = book.create_owner("王大")
+    account = book.add_account(owner, "华泰证券")
+    book.deposit(account, 10_000, trade_date="2026-01-02")
+    book.buy(account, kind="stock", market="CN", symbol="600519",
+             quantity=100, price=10, trade_date="2026-01-05")
+    book.sell(account, kind="stock", market="CN", symbol="600519",
+              quantity=100, price=12, trade_date="2026-02-05")
+    book.buy(account, kind="stock", market="CN", symbol="600519",
+             quantity=200, price=20, trade_date="2026-03-05")
+
+    first_buy = next(row for row in _txn_rows(book, account, symbol="600519",
+                                              action=schema.ACTION_BUY)
+                     if row["price"] == 10)
+    with pytest.raises(ValueError) as excinfo:
+        book.delete_txn(first_buy["id"])
+    assert "已经被后面的卖出用掉" in str(excinfo.value)
+
+    # 拒绝后保持原样：200 股 @20，现金 6200
+    row = book.positions().set_index("symbol").loc["600519"]
+    assert row["quantity"] == pytest.approx(200)
+    assert row["cost_price"] == pytest.approx(20)
+    assert book.cash_balance(account) == pytest.approx(6_200)
+
+
+def test_delete_buy_updates_later_sell_realized_pnl(book):
+    owner = book.create_owner("王大")
+    account = book.add_account(owner, "华泰证券")
+    book.deposit(account, 10_000, trade_date="2026-01-02")
+    book.buy(account, kind="stock", market="CN", symbol="600519",
+             quantity=100, price=10, trade_date="2026-01-05")
+    book.buy(account, kind="stock", market="CN", symbol="600519",
+             quantity=100, price=20, trade_date="2026-02-05")
+    book.sell(account, kind="stock", market="CN", symbol="600519",
+              quantity=50, price=25, trade_date="2026-03-05")
+
+    second_buy = next(row for row in _txn_rows(book, account, symbol="600519",
+                                               action=schema.ACTION_BUY)
+                      if row["price"] == 20)
+    result = book.delete_txn(second_buy["id"])
+
+    # 删除第二次买入后成本回到 10，那笔卖出的已实现盈亏从 500 变成 750
+    assert result["quantity"] == pytest.approx(50)
+    assert result["cost_price"] == pytest.approx(10)
+    assert result["realized_updated"] == 1
+    sell_txn = _txn_rows(book, account, symbol="600519", action=schema.ACTION_SELL)[0]
+    assert sell_txn["realized_pnl"] == pytest.approx(750)
+    assert result["cash"] == pytest.approx(10_250)
+
+
+def test_delete_non_trade_txn_is_rejected(book):
+    owner = book.create_owner("王大")
+    account = book.add_account(owner, "华泰证券")
+    book.deposit(account, 10_000, trade_date="2026-01-02")
+    deposit_txn = _txn_rows(book, account, action=schema.ACTION_DEPOSIT)[0]
+
+    with pytest.raises(ValueError) as excinfo:
+        book.delete_txn(deposit_txn["id"])
+    assert "只能删除" in str(excinfo.value)
+    assert store.get_txn(book.conn, deposit_txn["id"]) is not None
+    assert book.cash_balance(account) == pytest.approx(10_000)
+
+
+def test_delete_missing_txn_is_rejected(book):
+    with pytest.raises(ValueError):
+        book.delete_txn(999999)
+
+
 def test_deleting_account_cascades_holdings_and_txns(setup_book):
     book, _owner, htsc, _ib = setup_book
     book.deposit(htsc, 100000, trade_date="2026-01-02")
@@ -341,6 +539,35 @@ def test_deleting_account_cascades_holdings_and_txns(setup_book):
     store.delete_account(book.conn, htsc)
     assert book.positions().empty
     assert store.list_txns(book.conn, account_id=htsc) == []
+
+
+def test_ensure_schema_migrates_old_dividend_table(tmp_path):
+    """旧库的 portfolio_dividend 没有 report_period，打开时要自动补列。"""
+    db = tmp_path / "old.db"
+    with store.open_db(db, create=True) as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE {schema.TABLE_DIVIDEND} (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                instrument_id   INTEGER NOT NULL,
+                ex_date         TEXT NOT NULL,
+                pay_date        TEXT,
+                cash_per_share  REAL NOT NULL DEFAULT 0,
+                stock_per_share REAL NOT NULL DEFAULT 0,
+                currency        TEXT NOT NULL DEFAULT 'CNY',
+                source          TEXT NOT NULL DEFAULT 'auto',
+                recorded        INTEGER NOT NULL DEFAULT 0,
+                note            TEXT NOT NULL DEFAULT '',
+                fetched_at      TEXT NOT NULL,
+                UNIQUE(instrument_id, ex_date)
+            )
+            """
+        )
+        conn.commit()
+        store.ensure_schema(conn)
+        columns = {row[1] for row in conn.execute(
+            f"PRAGMA table_info({schema.TABLE_DIVIDEND})")}
+        assert "report_period" in columns
 
 
 def test_cash_instrument_is_created_per_currency(setup_book):

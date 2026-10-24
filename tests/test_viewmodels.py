@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from quant import config
-from quant.data import store
+from quant.data import schema, store
 from quant.ui import viewmodels as vm
 
 from conftest import DATES, SYMBOLS
@@ -54,6 +54,35 @@ def test_table_columns(conn):
     assert columns["symbol"] == "股票代码"
 
 
+def test_explorer_tables_includes_all_user_tables(conn):
+    tables = vm.explorer_tables("market", conn=conn)
+    assert set(schema.ALL_TABLES) <= set(tables)
+    assert "meta" in tables
+    assert "sqlite_sequence" not in tables
+
+
+def test_explorer_tables_portfolio(temp_dir):
+    from quant.portfolio import init_db, open_db as portfolio_open_db
+
+    db = temp_dir / "portfolio.db"
+    init_db(db)
+    with portfolio_open_db(db) as pconn:
+        tables = vm.explorer_tables("portfolio", conn=pconn)
+        assert {"portfolio_dividend", "portfolio_owner", "portfolio_account"} <= set(tables)
+        assert "sqlite_sequence" not in tables
+
+        columns = dict(vm.table_columns(pconn, "portfolio_dividend",
+                                        database="portfolio"))
+        assert columns["ex_date"] == "除息日"
+        assert columns["report_period"] == "报告期"
+
+
+def test_query_table_includes_meta(conn):
+    df, total = vm.query_table("meta", conn=conn)
+    assert total >= 1
+    assert "key" in df.columns
+
+
 def test_query_table_pagination(conn):
     page1, total = vm.query_table("daily_price", symbols=["000001"], page=1, page_size=10, conn=conn)
     assert total == len(DATES)
@@ -63,6 +92,13 @@ def test_query_table_pagination(conn):
 
     page2, _ = vm.query_table("daily_price", symbols=["000001"], page=2, page_size=10, conn=conn)
     assert page2["date"].iloc[0] == DATES[-11]
+
+
+def test_query_table_rejects_unknown_table(conn):
+    with pytest.raises(ValueError):
+        vm.query_table("sqlite_master", conn=conn)
+    with pytest.raises(ValueError):
+        vm.query_table("not_a_real_table", conn=conn)
 
 
 def test_query_table_date_filter(conn):
@@ -75,11 +111,6 @@ def test_query_table_extra_conditions(conn):
     df, total = vm.query_table("financial_indicator", extra_conditions=[("eps_ttm", ">", 1.05)], conn=conn)
     assert total == len(df)
     assert (df["eps_ttm"] > 1.05).all()
-
-
-def test_query_table_rejects_unknown_table(conn):
-    with pytest.raises(ValueError):
-        vm.query_table("sqlite_master", conn=conn)
 
 
 def test_query_table_rejects_unknown_column(conn):

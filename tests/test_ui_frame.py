@@ -105,12 +105,13 @@ def test_backtest_collect_params_validates(frame):
 
 
 def test_explorer_table_switch(frame):
-    from quant.ui import viewmodels as vm
-
     panel = frame.panels["数据浏览器"]
-    assert panel.table == vm.EXPLORER_TABLES[0]
+    assert panel.database == "market"
+    assert panel._tables, "数据表列表为空"
+    assert panel.table == panel._tables[0]
+    assert len(panel._tables) >= 5
     panel.table_choice.SetSelection(4)
-    assert panel.table == vm.EXPLORER_TABLES[4]
+    assert panel.table == panel._tables[4]
 
 
 def test_settings_labels(frame):
@@ -206,6 +207,23 @@ def test_backtest_render_fills_widgets(frame):
     assert labels["最终市值"] != "—"
     assert "策略" in panel.result_text.GetLabel()
     assert panel.figure_panel._canvas is not None, "净值图没有画出来"
+
+
+def test_dividend_refresh_rerenders_forecast(app, frame, monkeypatch):
+    """拉取分红后，「分红预期」页必须重新计算，不能停留在旧提示。"""
+    from quant.ui.screens import portfolio as portfolio_screen
+
+    panel = frame.panels["资产管理"]
+    calls = []
+    monkeypatch.setattr(panel, "render_dividends", lambda: calls.append("dividends"))
+    monkeypatch.setattr(panel, "render_forecast", lambda: calls.append("forecast"))
+    monkeypatch.setattr(panel, "_sync_years", lambda *args: None)
+    monkeypatch.setattr(portfolio_screen.vm, "portfolio_years", lambda: [])
+    monkeypatch.setattr(portfolio_screen.vm, "portfolio_report_years", lambda: [])
+    monkeypatch.setattr(wx, "MessageBox", lambda *args, **kwargs: wx.OK)
+
+    panel._after_dividend_refresh({"saved": 3, "failed": []})
+    assert calls == ["dividends", "forecast"]
 
 
 def test_help_dialog_shows_guide(app, frame):

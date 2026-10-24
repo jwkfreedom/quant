@@ -52,3 +52,16 @@ def test_info_command_runs(capsys):
     assert main(["info"]) == 0
     out = capsys.readouterr().out
     assert "DATA_DIR" in out
+
+
+def test_portfolio_txn_delete_flag():
+    args = build_parser().parse_args(["portfolio-txn", "--delete", "12"])
+    assert args.delete == 12
+    assert build_parser().parse_args(["portfolio-txn"]).delete is None
+
+
+def test_portfolio_dividend_report_period_flag():
+    args = build_parser().parse_args([
+        "portfolio-dividend", "--add", "600519", "--report-period", "2025-12-31",
+    ])
+    assert args.report_period == "2025-12-31"

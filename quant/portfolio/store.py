@@ -48,10 +48,25 @@ def open_db(path: Path | str | None = None, *, create: bool = True):
         conn.close()
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """给旧库补新列（CREATE TABLE IF NOT EXISTS 不会改已存在的表）。"""
+    columns = _table_columns(conn, schema.TABLE_DIVIDEND)
+    if "report_period" not in columns:
+        conn.execute(
+            f"ALTER TABLE {schema.TABLE_DIVIDEND} ADD COLUMN report_period TEXT"
+        )
+        logger.info("资产库迁移：%s 新增 report_period 列", schema.TABLE_DIVIDEND)
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
-    """建表 + 索引（幂等）。"""
+    """建表 + 索引 + 旧库迁移（幂等）。"""
     conn.executescript(schema.DDL)
     conn.executescript(schema.INDEXES)
+    _migrate_schema(conn)
     conn.execute(
         f"INSERT INTO {schema.TABLE_META} (key, value) VALUES (?, ?) "
         f"ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -374,6 +389,20 @@ def add_txn(conn: sqlite3.Connection, account_id: int, instrument_id: int, *,
     return int(cursor.lastrowid)
 
 
+def get_txn(conn: sqlite3.Connection, txn_id: int) -> dict | None:
+    """按 id 取一条流水（带产品与账户信息）。"""
+    row = conn.execute(
+        f"SELECT t.*, i.kind, i.market, i.symbol, i.name, i.currency, "
+        f"       a.name AS account_name "
+        f"FROM {schema.TABLE_TXN} t "
+        f"JOIN {schema.TABLE_INSTRUMENT} i ON i.id = t.instrument_id "
+        f"JOIN {schema.TABLE_ACCOUNT} a ON a.id = t.account_id "
+        f"WHERE t.id = ?",
+        (txn_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def list_txns(conn: sqlite3.Connection, *, account_id: int | None = None,
               instrument_id: int | None = None, start: str | None = None,
               end: str | None = None, limit: int | None = None) -> list[dict]:
@@ -461,19 +490,24 @@ def list_fx(conn: sqlite3.Connection, currency: str | None = None,
 # 分红
 # --------------------------------------------------------------------------
 def upsert_dividend(conn: sqlite3.Connection, instrument_id: int, *, ex_date: str,
-                    pay_date: str | None = None, cash_per_share: float = 0.0,
+                    pay_date: str | None = None, report_period: str | None = None,
+                    cash_per_share: float = 0.0,
                     stock_per_share: float = 0.0, currency: str = "CNY",
                     source: str = schema.DIVIDEND_SOURCE_AUTO, note: str = "") -> int:
     cursor = conn.execute(
         f"INSERT INTO {schema.TABLE_DIVIDEND} "
-        f"(instrument_id, ex_date, pay_date, cash_per_share, stock_per_share, currency, "
-        f" source, recorded, note, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?) "
+        f"(instrument_id, ex_date, pay_date, report_period, cash_per_share, "
+        f" stock_per_share, currency, source, recorded, note, fetched_at) "
+        f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?) "
         f"ON CONFLICT(instrument_id, ex_date) DO UPDATE SET "
-        f"pay_date = excluded.pay_date, cash_per_share = excluded.cash_per_share, "
+        f"pay_date = excluded.pay_date, "
+        f"report_period = COALESCE(excluded.report_period, report_period), "
+        f"cash_per_share = excluded.cash_per_share, "
         f"stock_per_share = excluded.stock_per_share, currency = excluded.currency, "
         f"note = excluded.note, fetched_at = excluded.fetched_at",
-        (instrument_id, ex_date, pay_date, _safe_number(cash_per_share),
-         _safe_number(stock_per_share), currency, source, note, today()),
+        (instrument_id, ex_date, pay_date, report_period,
+         _safe_number(cash_per_share), _safe_number(stock_per_share),
+         currency, source, note, today()),
     )
     conn.commit()
     row = conn.execute(

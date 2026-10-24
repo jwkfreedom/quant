@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pandas as pd
 import wx
 
 from quant.ui import theme
@@ -24,6 +25,8 @@ class ExplorerPanel(wx.Panel):
         self.runner = BusyRunner(self)
         self.page = 1
         self.total = 0
+        self._tables: list[str] = []
+        self._raw_frame = pd.DataFrame()
 
         root = wx.BoxSizer(wx.VERTICAL)
 
@@ -39,10 +42,18 @@ class ExplorerPanel(wx.Panel):
         body = query_card.body
 
         line1 = wx.BoxSizer(wx.HORIZONTAL)
+        line1.Add(text_label(body, "数据库", colour=C.text_secondary), 0,
+                  wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        self.database_choice = style_input(wx.Choice(
+            body, choices=[label for _key, label in vm.EXPLORER_DATABASES]))
+        self.database_choice.SetSelection(0)
+        self.database_choice.Bind(wx.EVT_CHOICE,
+                                  lambda _evt: self.on_database_changed())
+        line1.Add(self.database_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 16)
+
         line1.Add(text_label(body, "数据表", colour=C.text_secondary), 0,
                   wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
-        self.table_choice = style_input(wx.Choice(body, choices=list(vm.EXPLORER_TABLES)))
-        self.table_choice.SetSelection(0)
+        self.table_choice = style_input(wx.Choice(body, choices=[]))
         self.table_choice.Bind(wx.EVT_CHOICE, lambda _evt: self.on_table_changed())
         line1.Add(self.table_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
 
@@ -123,28 +134,66 @@ class ExplorerPanel(wx.Panel):
         root.Add(result_card, 1, wx.EXPAND | wx.ALL, theme.PAD)
 
         self.SetSizer(root)
-        self.on_table_changed()
+        self.on_database_changed()
 
     # ------------------------------------------------------------------
     @property
+    def database(self) -> str:
+        index = self.database_choice.GetSelection()
+        if index < 0 or index >= len(vm.EXPLORER_DATABASES):
+            return vm.EXPLORER_DATABASES[0][0]
+        return vm.EXPLORER_DATABASES[index][0]
+
+    @property
     def table(self) -> str:
-        return vm.EXPLORER_TABLES[self.table_choice.GetSelection()]
+        index = self.table_choice.GetSelection()
+        if index < 0 or index >= len(self._tables):
+            return ""
+        return self._tables[index]
 
     @property
     def page_size(self) -> int:
         return int(PAGE_SIZES[self.page_size_choice.GetSelection()])
 
+    def _clear_result(self, message: str = ""):
+        self._raw_frame = pd.DataFrame()
+        self.total = 0
+        self.grid.SetDataFrame(pd.DataFrame())
+        self.status.SetLabel(message)
+
+    def on_database_changed(self):
+        """切换数据库时重新读取全部用户表。"""
+        self._tables = []
+        self.table_choice.Set([])
+        self.column_choice.Set([])
+        self._clear_result("正在读取数据表…")
+        try:
+            tables = vm.explorer_tables(self.database)
+        except Exception as exc:  # pragma: no cover - 本地库一般不会失败
+            error_dialog(self, exc)
+            self._clear_result("读取数据表失败")
+            return
+        self._tables = list(tables)
+        self.table_choice.Set(self._tables)
+        if self._tables:
+            self.table_choice.SetSelection(0)
+        self.on_table_changed()
+
     def on_table_changed(self):
         """切换表时刷新列下拉框。"""
-        def work():
-            from quant.data import store
+        if not self.table:
+            self._clear_result("没有可浏览的数据表")
+            return
+        database, table = self.database, self.table
 
-            with store.open_db() as conn:
-                return vm.table_columns(conn, self.table)
+        def work():
+            with vm.explorer_db(database) as conn:
+                return vm.table_columns(conn, table, database=database)
 
         def done(columns):
-            self.column_choice.Set([f"{name}" for name, _label in columns])
-            self.column_choice.SetSelection(0)
+            self.column_choice.Set([name for name, _label in columns])
+            if columns:
+                self.column_choice.SetSelection(0)
             self.on_query(reset_page=True)
 
         self.runner.run(work, done, on_error=lambda exc: error_dialog(self, exc))
@@ -158,6 +207,9 @@ class ExplorerPanel(wx.Panel):
         return conditions
 
     def on_query(self, reset_page: bool = False):
+        if not self.table:
+            self._clear_result("没有可浏览的数据表")
+            return
         if reset_page:
             self.page = 1
 
@@ -165,12 +217,13 @@ class ExplorerPanel(wx.Panel):
         date_start = self.date_start.GetValue().strip() or None
         date_end = self.date_end.GetValue().strip() or None
         conditions = self._conditions()
-        table, page, page_size = self.table, self.page, self.page_size
+        database, table, page, page_size = self.database, self.table, self.page, self.page_size
 
         def work():
             return vm.query_table(
                 table, symbols=symbols, date_start=date_start, date_end=date_end,
                 extra_conditions=conditions, page=page, page_size=page_size,
+                database=database,
             )
 
         self.runner.run(work, self._on_data, on_error=lambda exc: error_dialog(self, exc),
@@ -178,13 +231,16 @@ class ExplorerPanel(wx.Panel):
 
     def _on_data(self, payload):
         df, total = payload
+        self._raw_frame = df
         self.total = total
-        self.grid.SetDataFrame(df)
-        self.render(update_grid=False)
+        self.render()
 
     def render(self, update_grid: bool = True):
         if update_grid:
-            self.grid.SetDataFrame(self.grid.frame, display_names=self.display_names.GetValue())
+            data = self._raw_frame
+            if self.display_names.GetValue():
+                data = data.rename(columns=vm.explorer_display_map(self.database))
+            self.grid.SetDataFrame(data)
 
         pages = max(1, (self.total + self.page_size - 1) // self.page_size)
         self.status.SetLabel(f"共 {self.total:,} 行 · 第 {self.page}/{pages} 页")
@@ -197,6 +253,9 @@ class ExplorerPanel(wx.Panel):
         self.on_query()
 
     def on_export(self, *, limit_page: bool):
+        if not self.table:
+            wx.MessageBox("没有可导出的数据表", "提示", wx.OK | wx.ICON_INFORMATION, self)
+            return
         path = ask_save_path(self, default_name=f"{self.table}.csv")
         if not path:
             return
@@ -205,7 +264,7 @@ class ExplorerPanel(wx.Panel):
         date_start = self.date_start.GetValue().strip() or None
         date_end = self.date_end.GetValue().strip() or None
         conditions = self._conditions()
-        table = self.table
+        database, table = self.database, self.table
         display_names = self.display_names.GetValue()
         page_size = self.page_size if limit_page else 500000
         page = self.page if limit_page else 1
@@ -214,8 +273,12 @@ class ExplorerPanel(wx.Panel):
             df, _total = vm.query_table(
                 table, symbols=symbols, date_start=date_start, date_end=date_end,
                 extra_conditions=conditions, page=page, page_size=page_size,
+                database=database,
             )
-            return vm.export_frame(df, path, display_names=display_names)
+            return vm.export_frame(
+                df, path, display_names=display_names,
+                display_names_map=vm.explorer_display_map(database),
+            )
 
         def done(saved):
             wx.MessageBox(f"已导出到\n{saved}", "完成", wx.OK | wx.ICON_INFORMATION, self)

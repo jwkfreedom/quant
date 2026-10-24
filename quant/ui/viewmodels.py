@@ -22,7 +22,13 @@ from quant.data import schema, store
 
 logger = logging.getLogger(__name__)
 
-#: 数据浏览器允许访问的表（白名单）
+#: 数据浏览器可选的数据库
+EXPLORER_DATABASES: tuple[tuple[str, str], ...] = (
+    ("market", "行情库 quant.db"),
+    ("portfolio", "资产库 portfolio.db"),
+)
+
+#: 行情库已知表（数据浏览器实际会从 sqlite_master 动态读取全部用户表）
 EXPLORER_TABLES: tuple[str, ...] = (
     schema.TABLE_DAILY_PRICE,
     schema.TABLE_ETF_DAILY,
@@ -32,6 +38,7 @@ EXPLORER_TABLES: tuple[str, ...] = (
     schema.TABLE_STOCK_LIST,
     schema.TABLE_VALUATION_PERCENTILE,
     schema.TABLE_TRADE_RECORD,
+    schema.TABLE_META,
 )
 
 #: 「新鲜度」判断阈值（天）
@@ -146,17 +153,66 @@ def data_status(conn: sqlite3.Connection | None = None) -> DataStatus:
 # --------------------------------------------------------------------------
 # P5 数据浏览器
 # --------------------------------------------------------------------------
-def _validate_table(table: str) -> str:
-    if table not in EXPLORER_TABLES:
-        raise ValueError(f"不支持的表: {table}；可选 {list(EXPLORER_TABLES)}")
+def explorer_display_map(database: str = "market") -> dict[str, str]:
+    """数据浏览器列名映射；资产库用 portfolio.schema 的中文名。"""
+    if database == "portfolio":
+        from quant.portfolio import schema as portfolio_schema
+        return {**schema.DISPLAY_NAMES, **portfolio_schema.DISPLAY_NAMES}
+    return schema.DISPLAY_NAMES
+
+
+@contextmanager
+def explorer_db(database: str = "market"):
+    """打开数据浏览器要访问的数据库（行情库或资产库）。"""
+    if database == "portfolio":
+        from quant.portfolio import open_db as portfolio_open_db
+        from quant.portfolio import store as portfolio_store
+
+        with portfolio_open_db() as conn:
+            portfolio_store.ensure_schema(conn)
+            yield conn
+        return
+    if database == "market":
+        with store.open_db() as conn:
+            yield conn
+        return
+    raise ValueError(f"未知数据库: {database}")
+
+
+def explorer_tables(database: str = "market",
+                    conn: sqlite3.Connection | None = None) -> list[str]:
+    """列出数据库里的全部用户表（动态读取 sqlite_master，排除 sqlite_ 内部表）。"""
+    if conn is None:
+        with explorer_db(database) as own_conn:
+            return explorer_tables(database, conn=own_conn)
+
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+    ).fetchall()
+    return [str(row[0]) for row in rows if not str(row[0]).startswith("sqlite_")]
+
+
+def _validate_table(conn: sqlite3.Connection, table: str) -> str:
+    """表名只允许普通标识符，且必须真实存在。"""
+    if not isinstance(table, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
+        raise ValueError(f"非法表名: {table!r}")
+    if table.startswith("sqlite_"):
+        raise ValueError(f"不支持访问内部表: {table}")
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"表不存在: {table}")
     return table
 
 
-def table_columns(conn: sqlite3.Connection, table: str) -> list[tuple[str, str]]:
+def table_columns(conn: sqlite3.Connection, table: str, *,
+                  database: str = "market") -> list[tuple[str, str]]:
     """返回表的 (列名, 中文展示名) 列表。"""
-    table = _validate_table(table)
+    table = _validate_table(conn, table)
     columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
-    return [(name, schema.display_name(name)) for name in columns]
+    mapping = explorer_display_map(database)
+    return [(name, mapping.get(name, name)) for name in columns]
 
 
 def query_table(
@@ -169,66 +225,72 @@ def query_table(
     page: int = 1,
     page_size: int = 200,
     order_desc: bool = True,
+    database: str = "market",
     conn: sqlite3.Connection | None = None,
 ) -> tuple[pd.DataFrame, int]:
-    """分页查询白名单表，返回 (当前页数据, 总行数)。
+    """分页查询任意用户表，返回 (当前页数据, 总行数)。
 
     参数 extra_conditions 形如 `[("roe", ">", "10")]`；列名会被校验、值以参数绑定。
     """
-    table = _validate_table(table)
-    own = conn is None
-    if own:
-        conn = store.connect()
+    if conn is None:
+        with explorer_db(database) as own_conn:
+            return query_table(
+                table, symbols=symbols, date_start=date_start, date_end=date_end,
+                extra_conditions=extra_conditions, page=page, page_size=page_size,
+                order_desc=order_desc, database=database, conn=own_conn,
+            )
 
-    try:
-        columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
-        where: list[str] = []
-        params: list = []
+    table = _validate_table(conn, table)
+    columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+    where: list[str] = []
+    params: list = []
 
-        codes = [str(s).zfill(6) for s in (symbols or []) if str(s).strip()]
-        if codes and "symbol" in columns:
-            where.append(f"symbol IN ({', '.join('?' for _ in codes)})")
-            params.extend(codes)
+    codes = [str(s).zfill(6) for s in (symbols or []) if str(s).strip()]
+    if codes and "symbol" in columns:
+        where.append(f"symbol IN ({', '.join('?' for _ in codes)})")
+        params.extend(codes)
 
-        if date_start and "date" in columns:
-            where.append("date >= ?")
-            params.append(str(date_start))
-        if date_end and "date" in columns:
-            where.append("date <= ?")
-            params.append(str(date_end))
+    if date_start and "date" in columns:
+        where.append("date >= ?")
+        params.append(str(date_start))
+    if date_end and "date" in columns:
+        where.append("date <= ?")
+        params.append(str(date_end))
 
-        for column, operator, value in (extra_conditions or []):
-            if column not in columns:
-                raise ValueError(f"{table} 没有列 {column}")
-            if operator not in (">", ">=", "<", "<=", "=", "!=", "like"):
-                raise ValueError(f"不支持的运算符: {operator}")
-            if operator == "like":
-                where.append(f"{column} LIKE ?")
-                params.append(f"%{value}%")
-            else:
-                where.append(f"{column} {operator} ?")
-                params.append(value)
+    for column, operator, value in (extra_conditions or []):
+        if column not in columns:
+            raise ValueError(f"{table} 没有列 {column}")
+        if operator not in (">", ">=", "<", "<=", "=", "!=", "like"):
+            raise ValueError(f"不支持的运算符: {operator}")
+        if operator == "like":
+            where.append(f"{column} LIKE ?")
+            params.append(f"%{value}%")
+        else:
+            where.append(f"{column} {operator} ?")
+            params.append(value)
 
-        clause = f" WHERE {' AND '.join(where)}" if where else ""
-        total = int(conn.execute(f"SELECT COUNT(*) FROM {table}{clause}", params).fetchone()[0])
+    clause = f" WHERE {' AND '.join(where)}" if where else ""
+    total = int(conn.execute(f"SELECT COUNT(*) FROM {table}{clause}", params).fetchone()[0])
 
-        order_column = "date" if "date" in columns else ("symbol" if "symbol" in columns else columns[0])
-        direction = "DESC" if order_desc else "ASC"
-        offset = max(0, (page - 1) * page_size)
-        sql = (f"SELECT * FROM {table}{clause} "
-               f"ORDER BY {order_column} {direction} LIMIT ? OFFSET ?")
-        df = pd.read_sql_query(sql, conn, params=[*params, page_size, offset])
-        return df, total
-    finally:
-        if own:
-            conn.close()
+    order_column = "date" if "date" in columns else ("symbol" if "symbol" in columns else columns[0])
+    direction = "DESC" if order_desc else "ASC"
+    offset = max(0, (page - 1) * page_size)
+    sql = (f"SELECT * FROM {table}{clause} "
+           f"ORDER BY {order_column} {direction} LIMIT ? OFFSET ?")
+    df = pd.read_sql_query(sql, conn, params=[*params, page_size, offset])
+    return df, total
 
 
-def export_frame(df: pd.DataFrame, path: str | Path, *, display_names: bool = False) -> Path:
+def export_frame(df: pd.DataFrame, path: str | Path, *, display_names: bool = False,
+                 display_names_map: dict[str, str] | None = None) -> Path:
     """导出 DataFrame 到 CSV / Excel（按扩展名判断）。"""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = schema.rename_for_display(df) if display_names else df
+    if display_names:
+        mapping = display_names_map or schema.DISPLAY_NAMES
+        data = df.rename(columns=mapping)
+    else:
+        data = df
 
     if path.suffix.lower() in (".xlsx", ".xls"):
         data.to_excel(path, index=False)
@@ -670,13 +732,27 @@ def portfolio_dividend_forecast(account_id: int | None = None,
 
 
 def portfolio_years() -> list[int]:
-    """分红里出现过的年份，倒序。"""
+    """分红里出现过的年份（按除息日），倒序。"""
     from quant.portfolio import store as portfolio_store
 
     with _portfolio_db() as (conn, _book):
         rows = portfolio_store.list_dividends(conn)
     years = {int(str(row["ex_date"])[:4]) for row in rows
              if row["ex_date"] and str(row["ex_date"])[:4].isdigit()}
+    return sorted(years, reverse=True)[:15]
+
+
+def portfolio_report_years() -> list[int]:
+    """分红里出现过的财报年度（按报告期），倒序。"""
+    from quant.portfolio import store as portfolio_store
+
+    with _portfolio_db() as (conn, _book):
+        rows = portfolio_store.list_dividends(conn)
+    years = set()
+    for row in rows:
+        period = str(row.get("report_period") or "")
+        if len(period) >= 4 and period[:4].isdigit():
+            years.add(int(period[:4]))
     return sorted(years, reverse=True)[:15]
 
 
@@ -732,6 +808,12 @@ def portfolio_adjust(account_id: int, *, kind: str, market: str, symbol: str,
         return book.adjust(account_id, kind=kind, market=market, symbol=symbol,
                            quantity=quantity, cost_price=cost_price, name=name,
                            trade_date=trade_date, note=note)
+
+
+def portfolio_delete_txn(txn_id: int) -> dict:
+    """删除一条买入/卖出流水，并重建持仓与现金。"""
+    with _portfolio_db() as (_conn, book):
+        return book.delete_txn(txn_id)
 
 
 def portfolio_cash_move(account_id: int, amount: float, *, deposit: bool,

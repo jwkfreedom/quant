@@ -796,10 +796,23 @@ def cmd_portfolio_txn(args: argparse.Namespace) -> int:
 
     from quant.portfolio import store
 
-    with _portfolio_ctx() as (conn, _book):
+    with _portfolio_ctx() as (conn, book):
+        if args.delete:
+            result = book.delete_txn(args.delete)
+            print(f"已删除{result['action_name']}：{result['trade_date']} "
+                  f"{result['symbol']} {result['deleted_quantity']:g} @ "
+                  f"{result['price']:,.4f}")
+            print(f"重算后持仓 {result['quantity']:g}，成本 {result['cost_price']:,.4f}，"
+                  f"现金 {result['cash']:,.2f}")
+            if result["realized_updated"]:
+                print(f"已更新 {result['realized_updated']} 笔卖出的已实现盈亏")
+            for warning in result["warnings"]:
+                print(f"[警告] {warning}")
+            print()
+
         txns = store.list_txns(conn, account_id=args.account_id, limit=args.limit)
         _print_table(pd.DataFrame(txns),
-                     columns=["trade_date", "account_name", "symbol", "name", "action",
+                     columns=["id", "trade_date", "account_name", "symbol", "name", "action",
                               "quantity", "price", "fee", "realized_pnl", "note"])
     return 0
 
@@ -835,6 +848,7 @@ def cmd_portfolio_dividend(args: argparse.Namespace) -> int:
                 raise SystemExit(f"还没有这个产品的持仓，先买入或调整: {args.add}")
             dividends.add_manual_dividend(
                 conn, instrument["id"], ex_date=args.ex_date,
+                report_period=args.report_period,
                 cash_per_share=args.per_share, pay_date=args.pay_date,
                 currency=instrument["currency"], note=args.note or "",
             )
@@ -857,8 +871,9 @@ def cmd_portfolio_dividend(args: argparse.Namespace) -> int:
                 months=args.months,
             )
             print()
-            print(f"分红预期（口径：{summary['scope']} 的每单位分红 × 当前持仓）")
+            print(f"分红预期（口径：{summary['scope']}，按当前持仓）")
             _print_table(detail, columns=["account", "symbol", "name", "quantity",
+                                          "fiscal_year", "dividend_count",
                                           "cash_per_share", "last_ex_date",
                                           "forecast_amount", "forecast_base",
                                           "yield_pct", "note"])
@@ -869,14 +884,17 @@ def cmd_portfolio_dividend(args: argparse.Namespace) -> int:
                 print(f"按当前市值折算的年化股息率 {summary['yield_pct']:.2f}%")
             if summary["missing_price"]:
                 print(f"[提示] {summary['missing_price']} 个产品缺价格，股息率不完整")
+            if summary.get("missing_report_period"):
+                print(f"[提示] {summary['missing_report_period']} 个产品的分红记录缺少报告期，"
+                      "请先重新拉取分红（portfolio-dividend --refresh）")
             if not args.refresh and summary["with_dividend"] == 0:
                 print("[提示] 还没有分红数据，先跑一次：quant portfolio-dividend --refresh")
             return 0
 
         frame = dividends.dividend_report(conn, account_id=account_id, year=args.year)
-        _print_table(frame, columns=["id", "account", "symbol", "name", "ex_date", "pay_date",
-                                     "cash_per_share", "quantity", "amount", "currency",
-                                     "recorded"])
+        _print_table(frame, columns=["id", "account", "symbol", "name", "ex_date",
+                                     "report_period", "pay_date", "cash_per_share",
+                                     "quantity", "amount", "currency", "recorded"])
 
         summary = dividends.dividend_summary(conn, account_id=account_id, year=args.year)
         scope = f"{args.year} 年" if args.year else "全部"
@@ -1104,9 +1122,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--account-id", type=int, default=None)
     p.set_defaults(func=cmd_portfolio_stats)
 
-    p = sub.add_parser("portfolio-txn", help="交易流水")
+    p = sub.add_parser("portfolio-txn", help="交易流水（可删除买入/卖出记录）")
     p.add_argument("--account-id", type=int, default=None)
     p.add_argument("--limit", type=int, default=50)
+    p.add_argument("--delete", type=int, metavar="ID", default=None,
+                   help="删除一条买入/卖出记录，并按剩余流水重算持仓与现金")
     p.set_defaults(func=cmd_portfolio_txn)
 
     p = sub.add_parser("portfolio-update", help="刷新汇率与持仓价格")
@@ -1126,6 +1146,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--market", default="CN", choices=["CN", "HK", "US"])
     p.add_argument("--ex-date", dest="ex_date", default=None, help="除息日")
     p.add_argument("--pay-date", dest="pay_date", default=None, help="派息日")
+    p.add_argument("--report-period", dest="report_period", default=None,
+                   help="报告期 YYYY-MM-DD（如 2025-12-31，手动登记时建议填写）")
     p.add_argument("--per-share", dest="per_share", type=float, default=0.0,
                    help="每股分红")
     p.add_argument("--forecast", action="store_true",
