@@ -28,6 +28,42 @@ logger = logging.getLogger(__name__)
 #: 长任务进度回调节奏（每处理多少只回报一次，太频繁会让界面卡顿）
 PROGRESS_STEP = 25
 
+#: 单只股票抓取失败后的重试次数（不含首次）与退避基数（秒）
+RETRY_TIMES = 2
+RETRY_BACKOFF = 1.0
+
+#: 用来探测「市场最新交易日」的样本股票（多取几只，避免停牌股带偏）
+PROBE_SYMBOLS: tuple[str, ...] = ("600000", "000001", "600519")
+
+
+def latest_trading_day(source: str = "auto",
+                       probes: tuple[str, ...] = PROBE_SYMBOLS) -> str | None:
+    """探测市场上真实的最新交易日（YYYY-MM-DD），探不到返回 None。
+
+    为什么要探：库里 MAX(date) 只代表「我们已经拉到哪一天」，全市场都停在
+    10-13 时它也是 10-13；拿它当基准的话，所有股票都会被判成「已最新」而
+    永远不再更新。所以先拉几只样本股票的真实最新数据来确定基准。
+    探不到（网络问题）时返回 None，调用方应退化为「不跳过」。
+    """
+    today = download_a.today_compact()
+    start = (datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y%m%d")
+    best: str | None = None
+    for code in probes:
+        try:
+            frame = download_a.fetch_price(code, start, today, source=source)
+        except Exception:
+            logger.debug("探测最新交易日失败: %s", code, exc_info=True)
+            continue
+        if frame is None or frame.empty or "日期" not in frame.columns:
+            continue
+        try:
+            day = str(frame["日期"].max())[:10]
+        except Exception:
+            continue
+        if best is None or day > best:
+            best = day
+    return best
+
 
 # --------------------------------------------------------------------------
 # 工具
@@ -163,14 +199,32 @@ def update_price(
         today = download_a.today_compact()
         started = time.time()
 
+        # 增量更新前先探一次「市场真实的最新交易日」，用它判断哪些股票已经最新。
+        # 探不到就置 None，后面退化为「不跳过」，宁可多拉也不漏。
+        # 只在「全市场」更新时探测：小任务（指定股票或 limit）本来就没几只，
+        # 探测要额外 3 次请求，收益不如直接拉。
+        market_latest: str | None = None
+        probe_needed = (mode == "incremental" and symbols is None and limit is None)
+        if probe_needed:
+            if callable(progress):
+                progress(0, len(symbol_list), "探测最新交易日…")
+            market_latest = latest_trading_day(source=source)
+            if market_latest:
+                logger.info("市场最新交易日: %s", market_latest)
+
         # 先算好每只股票的起始日期（要读库，放在主线程）
         plan: list[tuple[str, str]] = []
         skipped = 0
+        up_to_date = 0
         for symbol in symbol_list:
             if mode == "full":
                 start_date = start
             else:
                 last = store.last_price_date(conn, symbol)
+                # 已经拉到最新交易日 -> 不用再发请求
+                if market_latest and last and last >= market_latest:
+                    up_to_date += 1
+                    continue
                 start_date = _next_day(last) if last else start
             if not start_date or start_date > today:
                 skipped += 1
@@ -185,11 +239,31 @@ def update_price(
         if callable(progress):
             progress(0, total, "准备中…")
 
+        retried = 0
+
         def load_one(item: tuple[str, str]) -> tuple[str, pd.DataFrame]:
+            """抓一只股票；失败按 RETRY_TIMES 重试（网络抖动很常见）。"""
+            nonlocal retried
             code, start_date = item
-            download_a.sleep(delay)
-            raw = download_a.fetch_price(code, start_date, today, source=source)
-            return code, frames.prepare_price_frame(raw, code)
+            last_error: Exception | None = None
+
+            for attempt in range(RETRY_TIMES + 1):
+                try:
+                    if attempt == 0:
+                        download_a.sleep(delay)      # 只在首次等待，重试不再叠加
+                    raw = download_a.fetch_price(code, start_date, today, source=source)
+                    if attempt:
+                        retried += 1
+                    return code, frames.prepare_price_frame(raw, code)
+                except Exception as exc:            # noqa: BLE001 - 需要重试所有网络异常
+                    last_error = exc
+                    if attempt < RETRY_TIMES:
+                        delay_next = RETRY_BACKOFF * (attempt + 1)
+                        logger.debug("抓取 %s 失败，%.1fs 后重试（第 %d 次）",
+                                     code, delay_next, attempt + 1)
+                        time.sleep(delay_next)
+
+            raise last_error if last_error else RuntimeError(f"抓取失败: {code}")
 
         def consume(code: str, frame: pd.DataFrame) -> None:
             nonlocal rows
@@ -239,8 +313,12 @@ def update_price(
             "planned": len(plan),
             "updated": len(updated),
             "skipped": skipped,
+            "up_to_date": up_to_date if mode == "incremental" else 0,
+            "retried": retried,
             "rows": rows,
             "failures": failures,
+            "market_latest": market_latest,
+            "elapsed": round(time.time() - started, 1),
         }
     finally:
         socket.setdefaulttimeout(original_timeout)

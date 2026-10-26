@@ -821,6 +821,16 @@ def cmd_portfolio_update(args: argparse.Namespace) -> int:
     from quant.portfolio import prices
 
     with _portfolio_ctx() as (conn, _book):
+        if args.funds_only:
+            result = prices.refresh_fund_prices(
+                conn, include_etf=not args.no_etf,
+                progress=lambda done, total, label: print(f"  [{done}/{total}] {label}"),
+            )
+            print(f"基金净值更新 {result['updated']}/{result['total']} 只，跳过 {result['skipped']} 条")
+            if result["failed"]:
+                print("取不到：" + "、".join(result["failed"]))
+            return 0
+
         print("刷新汇率…")
         for currency, count in prices.update_fx(conn, days=args.fx_days).items():
             print(f"  {currency}: 写入 {count} 天")
@@ -1132,6 +1142,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("portfolio-update", help="刷新汇率与持仓价格")
     p.add_argument("--no-funds", dest="no_funds", action="store_true",
                    help="跳过场外基金净值")
+    p.add_argument("--funds-only", dest="funds_only", action="store_true",
+                   help="只刷新持有中的基金净值 / ETF 价格（不动股票与汇率）")
+    p.add_argument("--no-etf", dest="no_etf", action="store_true",
+                   help="配合 --funds-only：只刷场外基金，不刷场内 ETF")
     p.add_argument("--fx-days", type=int, default=30, help="汇率回看天数")
     p.set_defaults(func=cmd_portfolio_update)
 

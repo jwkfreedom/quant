@@ -374,6 +374,9 @@ class PortfolioPanel(wx.Panel):
             bar.Add(button, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
 
         bar.AddStretchSpacer()
+        bar.Add(make_button(page, "更新基金净值",
+                            lambda _evt: self.on_refresh_funds()), 0,
+                wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 12)
         self.position_status = text_label(page, "", size=theme.FONT_SMALL,
                                           colour=C.text_secondary)
         bar.Add(self.position_status, 0, wx.ALIGN_CENTER_VERTICAL)
@@ -845,6 +848,31 @@ class PortfolioPanel(wx.Panel):
     # ------------------------------------------------------------------
     # 操作
     # ------------------------------------------------------------------
+    def on_refresh_funds(self):
+        """只拉持有中的基金净值 / ETF 价格（不碰股票和汇率）。"""
+        frame = wx.GetTopLevelParent(self)
+
+        def report(done: int, total: int, label: str):
+            text = f"更新基金净值 {done}/{total}：{label}" if total else label
+            wx.CallAfter(self.header.set_subtitle, text)
+            if hasattr(frame, "set_status"):
+                wx.CallAfter(frame.set_status, text)
+
+        self.runner.run(lambda: vm.portfolio_refresh_funds(progress=report),
+                        self._after_fund_refresh,
+                        on_error=lambda exc: error_dialog(self, exc),
+                        busy_message="更新持有基金净值…（联网）")
+
+    def _after_fund_refresh(self, result: dict):
+        if result["total"] == 0:
+            self._flash = "持仓里还没有基金，先在「持仓」页买入或调整"
+        else:
+            message = [f"基金净值更新 {result['updated']}/{result['total']} 只"]
+            if result["failed"]:
+                message.append("取不到：" + "、".join(result["failed"]))
+            self._flash = "　".join(message)
+        self.refresh()
+
     def on_refresh(self):
         """刷新价格与汇率，过程中把进度写到副标题上。"""
 

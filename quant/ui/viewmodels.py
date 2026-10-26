@@ -776,6 +776,18 @@ def portfolio_refresh(*, include_funds: bool = True, with_fx: bool = True,
         return result
 
 
+def portfolio_refresh_funds(*, include_etf: bool = True, progress=None) -> dict:
+    """只刷新**持仓里持有**的基金净值 / ETF 价格（不碰全市场）。
+
+    progress: 可选 progress(已完成, 总数, 说明)，界面用来显示进度。
+    """
+    from quant.portfolio import prices as portfolio_prices
+
+    with _portfolio_db() as (conn, _book):
+        return portfolio_prices.refresh_fund_prices(conn, include_etf=include_etf,
+                                                    progress=progress)
+
+
 def portfolio_refresh_dividends(*, include_funds: bool = True) -> dict:
     from quant.portfolio import dividends as portfolio_dividends_module
 

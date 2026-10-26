@@ -91,15 +91,75 @@ def fetch_stock_price(symbol: str, market: str = "CN") -> tuple[float, str] | No
         return None
 
 
+def is_fund_like(kind: str, symbol: str, market: str = "CN") -> bool:
+    """判断该产品是否该按「基金」处理（而不是只信 kind 字段）。
+
+    录入时把 LOF / 封闭基金错选成「股票」很常见，所以除了 kind，
+    再看代码段：6 位数字且以 1（深市 LOF/ETF）或 5（沪市 ETF/LOF）开头，
+    一律当基金处理。
+    """
+    if market != schema.MARKET_CN:
+        return False
+    if kind in (schema.KIND_FUND, schema.KIND_ETF):
+        return True
+    code = str(symbol)
+    return len(code) == 6 and code.isdigit() and code[0] in ("1", "5")
+
+
+def fetch_fund_price(kind: str, symbol: str) -> tuple[float, str, str] | None:
+    """取基金价格：主源按 kind 选，失败自动换另一个源。
+
+    返回 (价格, 日期, 来源说明)，来源会用「净值」/「场内价」显示在进度里。
+    """
+    prefer_nav = kind == schema.KIND_FUND
+    order = ("nav", "market") if prefer_nav else ("market", "nav")
+
+    for source in order:
+        if source == "nav":
+            got = fetch_fund_nav(symbol)
+            if got is not None:
+                return got[0], got[1], "净值"
+        else:
+            got = fetch_etf_price(symbol)
+            if got is not None:
+                return got[0], got[1], "场内价"
+    return None
+
+
+def etf_sina_symbol(symbol: str) -> str:
+    """把 6 位 ETF 代码转成新浪格式（沪市加 sh、深市加 sz）。"""
+    code = str(symbol).zfill(6)
+    if code.startswith(("50", "51", "52", "56", "58")):
+        return f"sh{code}"
+    return f"sz{code}"
+
+
 def fetch_etf_price(symbol: str) -> tuple[float, str] | None:
-    """场内 ETF 最新收盘价（本地 etf_daily 只覆盖少数几只，其余联网取）。"""
+    """场内 ETF 最新收盘价。
+
+    东财的 fund_etf_hist_em 近期经常断连，所以先用新浪（一次全历史，取最后一根），
+    失败再退回东财。
+    """
+    code = str(symbol).zfill(6)
+    try:
+        import akshare as ak
+
+        frame = ak.fund_etf_hist_sina(symbol=etf_sina_symbol(code))
+        if frame is not None and not frame.empty:
+            frame = frame.dropna(subset=["close"])
+            if not frame.empty:
+                last = frame.iloc[-1]
+                return float(last["close"]), str(last["date"])[:10]
+    except Exception:
+        logger.debug("新浪取 ETF 失败: %s", code, exc_info=True)
+
     try:
         import akshare as ak
 
         end = date.today()
         start = end - timedelta(days=30)
         frame = ak.fund_etf_hist_em(
-            symbol=symbol, period="daily",
+            symbol=code, period="daily",
             start_date=start.strftime("%Y%m%d"), end_date=end.strftime("%Y%m%d"), adjust="",
         )
         if frame is None or frame.empty:
@@ -107,7 +167,7 @@ def fetch_etf_price(symbol: str) -> tuple[float, str] | None:
         last = frame.iloc[-1]
         return float(last["收盘"]), str(last["日期"])[:10]
     except Exception:
-        logger.warning("取 ETF 行情失败: %s", symbol, exc_info=True)
+        logger.warning("取 ETF 行情失败: %s", code, exc_info=True)
         return None
 
 
@@ -228,10 +288,13 @@ def update_fx(conn, currencies: tuple[str, ...] = ("USD", "HKD"), days: int = 30
 def resolve_price_map(conn, holdings=None) -> dict:
     """给持仓估值用的价格表：(kind, market, symbol) -> (价格, 日期)。
 
-    优先级：
-      1. 本地行情库的**最新收盘价**（A股 / 场内 ETF，不联网，很快）
-      2. 产品上保存的上次刷新价（场外基金净值、本地没有数据的品种）
-    都取不到就**不放进表里**，界面会显示「缺价格」。
+    两个来源二选一，**按日期取更新的那个**：
+      1. 本地行情库的最新收盘价（A股 / 场内 ETF，不联网）
+      2. 产品上保存的上次刷新价（场外基金净值、联网拉到的 ETF 价）
+
+    之前固定「本地优先」，会出现刚拉完基金净值、市值却还用着半年
+    前本地旧价的情况，所以这里改成比日期。
+    都取不到就不放进表里，界面显示「缺价格」。
     """
     if holdings is None:
         holdings = store.list_holdings(conn)
@@ -247,12 +310,93 @@ def resolve_price_map(conn, holdings=None) -> dict:
             continue
 
         latest = local_latest(row["kind"], row["market"], row["symbol"])
-        if latest is not None:
+        saved = ((float(row["manual_price"]), row["price_date"])
+                 if row["manual_price"] is not None else None)
+
+        if latest and saved:
+            # 日期都是 YYYY-MM-DD 字符串，可直接比较；空的当最旧
+            result[key] = latest if (latest[1] or "") >= (saved[1] or "") else saved
+        elif latest:
             result[key] = latest
-        elif row["manual_price"] is not None:
-            result[key] = (float(row["manual_price"]), row["price_date"])
+        elif saved:
+            result[key] = saved
     return result
 
+
+
+# --------------------------------------------------------------------------
+# 只刷新持有中的基金（场外基金 + 场内 ETF）
+# --------------------------------------------------------------------------
+#: 金融产品的类型集合（用于「只更新基金」）
+FUND_KINDS = (schema.KIND_FUND, schema.KIND_ETF)
+
+
+def refresh_fund_prices(conn, *, include_etf: bool = True,
+                        progress=None) -> dict:
+    """只拉**持仓里持有**的基金价格，不碰全市场。
+
+    - 场外基金：akshare 的 fund_open_fund_info_em，逐只拉最新净值
+    - 场内 ETF / LOF / 封闭基金：新浪 fund_etf_hist_sina，逐只拉最新收盘价
+    - **判定不只看 kind**：6 位数字且以 1 或 5 开头的代码一律当基金处理，
+      因为录入时把 LOF 错选成「股票」很常见
+    - 主源失败自动换另一个源（净值 ↔ 场内价）
+    - 同一只基金被多个账户持有时只拉一次
+
+    progress: 可选 progress(已完成, 总数, 说明)
+    返回 {"updated", "failed", "skipped", "total"}
+    """
+    holdings = store.list_holdings(conn)
+
+    def wanted(row: dict) -> bool:
+        if not is_fund_like(row["kind"], row["symbol"], row["market"]):
+            return False
+        # 只刷场外基金时，场内可交易的（ETF/LOF/代码 1、5 开头）仍跳过
+        if not include_etf and not row["kind"] == schema.KIND_FUND:
+            return False
+        return True
+
+    unique: dict[int, dict] = {}
+    for row in holdings:
+        if wanted(row):
+            unique.setdefault(row["instrument_id"], row)
+
+    targets = list(unique.values())
+    skipped = len(holdings) - len(targets)
+    total = len(targets)
+
+    if callable(progress):
+        progress(0, total, "准备刷新基金净值…" if total else "没有持有中的基金")
+
+    updated, failed = 0, []
+    for index, row in enumerate(targets, start=1):
+        kind = row["kind"]
+        label = f"{row['symbol']} {row['name'] or ''}".strip()
+
+        # 本地行情库有就用本地的（快且不联网），否则按基金多源兜底
+        local = local_latest(kind, row["market"], row["symbol"])
+        if local is not None:
+            price, price_date = local
+            source = "本地行情"
+        else:
+            got = fetch_fund_price(kind, row["symbol"])
+            if got is None:
+                failed.append(label)
+                if callable(progress):
+                    progress(index, total, f"{label}（取不到）")
+                continue
+            price, price_date, source = got
+
+        if callable(progress):
+            progress(index, total, f"{label}（{source} {price_date}）")
+
+        store.update_instrument(conn, row["instrument_id"],
+                                manual_price=float(price), price_date=price_date)
+        updated += 1
+
+    return {"updated": updated, "failed": failed, "skipped": skipped, "total": total}
+
+
+# --------------------------------------------------------------------------
 
 # --------------------------------------------------------------------------
 # 批量刷新持仓价格
@@ -287,14 +431,17 @@ def refresh_prices(conn, *, include_funds: bool = True, owner_id: int | None = N
 
         kind = row["kind"]
         result = None
-        if kind == schema.KIND_STOCK and row["market"] == schema.MARKET_CN:
+        if is_fund_like(kind, row["symbol"], row["market"]) and include_funds:
+            # 基金类（含被误录成股票的 LOF/封闭基金）：本地库优先，缺了多源兜底
+            local = local_latest(kind, row["market"], row["symbol"])
+            if local is not None:
+                result = local
+            else:
+                got = fetch_fund_price(kind, row["symbol"])
+                result = (got[0], got[1]) if got else None
+        elif kind == schema.KIND_STOCK and row["market"] == schema.MARKET_CN:
             # 本地全市场库优先，缺了再联网
             result = local_latest(kind, row["market"], row["symbol"]) or fetch_stock_price(row["symbol"])
-        elif kind == schema.KIND_ETF and row["market"] == schema.MARKET_CN:
-            # etf_daily 只覆盖少数几只，绝大多数要联网取
-            result = local_latest(kind, row["market"], row["symbol"]) or fetch_etf_price(row["symbol"])
-        elif kind == schema.KIND_FUND and include_funds:
-            result = fetch_fund_nav(row["symbol"])
         elif kind == schema.KIND_STOCK and row["market"] == schema.MARKET_HK:
             result = fetch_hk_price(row["symbol"])
         elif kind == schema.KIND_STOCK and row["market"] == schema.MARKET_US:

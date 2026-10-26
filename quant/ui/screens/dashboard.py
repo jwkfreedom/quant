@@ -11,6 +11,42 @@ from quant.ui import viewmodels as vm
 from quant.ui.widgets import BusyRunner, error_dialog
 
 
+
+def _format_result(key: str, result) -> str:
+    """把更新结果整理成人话，别把 dict 原样甩给用户。"""
+    if not isinstance(result, dict):
+        return str(result)
+
+    if key == "price":
+        lines = []
+        if result.get("market_latest"):
+            lines.append(f"市场最新交易日：{result['market_latest']}")
+        lines.append(f"计划更新 {result.get('planned', 0):,} 只"
+                     f"，已是最新跳过 {result.get('up_to_date', 0):,} 只")
+        lines.append(f"成功 {result.get('updated', 0):,} 只"
+                     f"，失败 {len(result.get('failures') or []):,} 只"
+                     f"，重试 {result.get('retried', 0):,} 次")
+        lines.append(f"新增 {result.get('rows', 0):,} 行"
+                     f"，用时 {result.get('elapsed', 0):.0f} 秒")
+        failures = result.get("failures") or []
+        if failures:
+            sample = "、".join(failures[:8])
+            if len(failures) > 8:
+                sample += f" 等 {len(failures)} 只"
+            lines.append("失败样例：" + sample)
+        return "\n".join(lines)
+
+    # 其它任务：只列出非空的标量字段，太长的列表截断
+    lines = []
+    for field, value in result.items():
+        if isinstance(value, (list, tuple)):
+            lines.append(f"{field}: {len(value)} 项")
+        elif isinstance(value, dict):
+            lines.append(f"{field}: {value}")
+        else:
+            lines.append(f"{field}: {value}")
+    return "\n".join(lines) if lines else "（无返回值）"
+
 class DashboardPanel(wx.Panel):
     """数据新鲜度 + 数据量 + 更新入口。"""
 
@@ -143,7 +179,7 @@ class DashboardPanel(wx.Panel):
             raise ValueError(key)
 
         def done(result):
-            wx.MessageBox(f"{action['label']}完成：\n{result}", "完成",
+            wx.MessageBox(f"{action['label']}完成\n\n{_format_result(key, result)}", "完成",
                           wx.OK | wx.ICON_INFORMATION, self)
             self.refresh()
 
