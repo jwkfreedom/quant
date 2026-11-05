@@ -60,6 +60,9 @@ class ConditionRow:
                                lambda _evt, n=name: on_help_requested(n))
         line.Add(self.checkbox, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
 
+        # 参数放进 WrapSizer：参数多的条件（如 pe_percentile 有 3 个参数）
+        # 在左侧栏宽度不够时会自动换行，而不是把最后一个输入框挤出可视区。
+        params = wx.WrapSizer(wx.HORIZONTAL)
         for param_name, param in signature.parameters.items():
             if param_name == "self":
                 continue
@@ -67,11 +70,15 @@ class ConditionRow:
             label = text_label(panel, param_name, size=theme.FONT_SMALL, colour=C.text_muted)
             control = wx.TextCtrl(panel, size=(64, -1), value=str(default) if default != "" else "")
             style_input(control)
-            line.Add(label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
-            line.Add(control, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
+
+            # label 和输入框绑定成一个整体，避免换行时被拆到两行
+            pair = wx.BoxSizer(wx.HORIZONTAL)
+            pair.Add(label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
+            pair.Add(control, 0, wx.ALIGN_CENTER_VERTICAL)
+            params.Add(pair, 0, wx.RIGHT, 10)
             self.fields.append((param_name, control, default))
 
-        line.AddStretchSpacer()
+        line.Add(params, 1, wx.EXPAND)
         sizer.Add(line, 0, wx.EXPAND | wx.BOTTOM, 8)
 
     @property

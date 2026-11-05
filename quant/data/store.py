@@ -136,12 +136,22 @@ def connect(db_path: Path | None = None, *, create: bool = False) -> sqlite3.Con
     path = Path(db_path) if db_path is not None else DB_PATH
     if create:
         path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    # 多个任务（更新行情 / 重建分位 / 界面查询）可能同时写库，
-    # 给写入等待设个上限，避免直接抛 "database is locked"。
+    # timeout 提到 60s：建连接时可能要给 WAL 加锁，默认 5s 太短
+    conn = sqlite3.connect(str(path), timeout=60)
+    # busy_timeout 必须早于任何可能抢写锁的 PRAGMA
     conn.execute("PRAGMA busy_timeout=60000")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        # 别的进程正在用一会儿也认，沿用现有 journal 模式即可
+        logger.debug("切换 WAL 失败，沿用现有模式", exc_info=True)
+    conn.execute("PRAGMA synchronous=NORMAL")
+
+    # 临时表放内存。SQLite 默认把临时表写磁盘，快照那种 5 表 JOIN 的
+    # 临时数据一旦建不出文件，报的是极具误导性的 "unable to open
+    # database file"（看起来像数据库坏了，其实是临时文件）。
+    # 数据库涨到 2.8GB 后这条查询就踩到了，改成内存临时表最稳。
+    conn.execute("PRAGMA temp_store=MEMORY")
     return conn
 
 

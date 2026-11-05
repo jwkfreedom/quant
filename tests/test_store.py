@@ -77,3 +77,22 @@ def test_write_growth_with_missing_optional_columns(temp_dir):
         assert store.write_growth(conn, df) == 1
         conn.commit()
         assert store.table_count(conn, schema.TABLE_FUNDAMENTAL_GROWTH) == 1
+
+def test_connect_sets_memory_temp_store(tmp_path):
+    """临时表必须放内存。
+
+    SQLite 默认把临时表写磁盘，快照那种多表 JOIN 一旦建不出临时文件，
+    报的是 "unable to open database file"，看起来像数据库坏了。
+    数据库涨到 2.8GB 后真实踩过一次，这里固定住这个设置。
+    """
+    path = tmp_path / "t.db"
+    store.init_db(path)
+
+    conn = store.connect(path)
+    try:
+        assert conn.execute("PRAGMA temp_store").fetchone()[0] == 2      # 2 = MEMORY
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 60000
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        assert conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0] > 0
+    finally:
+        conn.close()

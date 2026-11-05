@@ -281,3 +281,32 @@ def test_backtest_shows_strategy_explanation(frame):
 
     # 说明文本只读
     assert not panel.explain_text.IsEditable()
+
+def test_percentile_rows_do_not_overflow(app):
+    """三个百分位条件各有 3 个参数，最后一个输入框不能超出左侧栏宽度。
+
+    这里单独建一个 Frame 而不是复用 MainFrame：Simplebook 里非当前页不会
+    真正布局，控件坐标全是 (0,0)，测不出溢出。
+    """
+    from quant.ui.screens.screener import ScreenerPanel
+
+    window = wx.Frame(None, size=(1440, 900))
+    panel = ScreenerPanel(window)
+    window.Layout()
+    app.Yield()
+
+    width = panel.conditions.GetClientSize().width
+    if width <= 0:                       # 无头环境偶尔拿不到宽度
+        pytest.skip("拿不到控件宽度")
+
+    for name in ("pe_percentile", "pb_percentile", "ps_percentile"):
+        row = next(r for r in panel.rows if r.name == name)
+        assert len(row.fields) == 3, f"{name} 应当有 3 个参数"
+        for field_name, control, _default in row.fields:
+            rect = control.GetRect()
+            assert rect.width >= 60, f"{name}.{field_name} 输入框被压得太窄"
+            assert rect.x >= 0, f"{name}.{field_name} 跑到左边界外"
+            assert rect.x + rect.width <= width, (
+                f"{name}.{field_name} 超出可视宽度（{rect.x + rect.width} > {width}）"
+            )
+    window.Destroy()
